@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "久远的翻译工具",
+  "version": "1.0.0",
+  "description": "轻量级双语对照翻译，支持 Google 免费翻译及 OpenAI 兼容接口",
+  "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16":  "images/1.png",
+    "48":  "images/1.png",
+    "128": "images/1.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "轻量翻译",
+    "default_icon": {
+      "16":  "images/1.png",
+      "48":  "images/1.png",
+      "128": "images/1.png"
+    }
+  },
+  "options_page": "options/options.html",
+  "commands": {
+    "toggle-translation": {
+      "suggested_key": {
+        "default": "Alt+T",
+        "mac": "Alt+T"
+      },
+      "description": "开启/关闭页面翻译"
+    }
+  }
+}
