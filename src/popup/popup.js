@@ -116,24 +116,7 @@ function bindEvents() {
 
 function loadSettings() {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(
-      {
-        service: 'google',
-        apiKey: '',
-        apiBaseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-5.4-nano',
-        targetLang: 'zh-CN',
-        autoTranslate: false,
-        aggressiveMode: false,
-        shortcut: 'Alt+T',
-        theme: 'underline',
-        translationColorMode: 'inherit',
-        translationColor: '#1a73e8',
-        systemPrompt: '',
-        excludeSelectors: '',
-      },
-      resolve
-    );
+    chrome.storage.sync.get(LT_DEFAULTS, resolve);
   });
 }
 

@@ -38,16 +38,6 @@ function drawIcon(size, isActive) {
   return ctx.getImageData(0, 0, size, size);
 }
 
-// 从图片文件生成 ImageData（兼容 JPG/PNG/任意浏览器可解码格式）
-async function loadImageData(url, size) {
-  const blob = await fetch(url).then((r) => r.blob());
-  const bmp = await createImageBitmap(blob, { resizeWidth: size, resizeHeight: size });
-  const canvas = new OffscreenCanvas(size, size);
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(bmp, 0, 0, size, size);
-  return ctx.getImageData(0, 0, size, size);
-}
-
 async function setIcon(isActive = false) {
   const size = 128;
   try {
@@ -138,41 +128,85 @@ async function handleTranslation(texts, settings = {}) {
     return { success: true, translations: [] };
   }
 
-  if (service === 'openai') {
-    return translateWithOpenAI(texts, settings);
+  // 每 20s 做一次无害的 API 调用，防止 MV3 Service Worker 在长批次翻译期间被 Chrome 休眠
+  const keepAlive = setInterval(() => {
+    chrome.storage.session?.get?.('_ka').catch?.(() => {});
+  }, 20_000);
+
+  try {
+    if (service === 'openai') {
+      return await translateWithOpenAI(texts, settings);
+    }
+    return await translateWithGoogle(texts, targetLang);
+  } finally {
+    clearInterval(keepAlive);
   }
-  return translateWithGoogle(texts, targetLang);
 }
 
-// ---- Google 免费翻译 ----
-// 用 \n 连接批量文本，避免过多请求；Google 一般能正确保留换行
+// ---- Google 免费翻译（并发 + 分隔符降级）----
 async function translateWithGoogle(texts, targetLang) {
   const BATCH = 10;
-  const results = [];
+  const CONCURRENCY = 3;
+  const results = new Array(texts.length).fill('');
 
+  const batches = [];
   for (let i = 0; i < texts.length; i += BATCH) {
-    const chunk = texts.slice(i, i + BATCH);
-    const joined = chunk.join('\n\n⚡\n\n'); // 特殊分隔符，翻译后基本保留
-    const url =
-      `https://translate.googleapis.com/translate_a/single` +
-      `?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t` +
-      `&q=${encodeURIComponent(joined)}`;
+    batches.push({ start: i, chunk: texts.slice(i, i + BATCH) });
+  }
 
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Google 翻译请求失败: HTTP ${res.status}`);
+  for (let i = 0; i < batches.length; i += CONCURRENCY) {
+    const group = batches.slice(i, i + CONCURRENCY);
+    const responses = await Promise.all(
+      group.map((b) => fetchGoogleBatch(b.chunk, targetLang))
+    );
+    group.forEach((b, idx) => {
+      responses[idx].forEach((t, j) => {
+        results[b.start + j] = t;
+      });
+    });
 
-    const data = await res.json();
-    // data[0] 是 [[译文片段, 原文片段], ...]
-    const full = data[0].map((item) => item[0]).join('');
-    // 按分隔符拆分
-    const parts = full.split(/\s*⚡\s*/);
-
-    for (let j = 0; j < chunk.length; j++) {
-      results.push(parts[j]?.trim() || '');
+    if (i + CONCURRENCY < batches.length) {
+      await new Promise((r) => setTimeout(r, 100));
     }
   }
 
   return { success: true, translations: results };
+}
+
+async function fetchGoogleBatch(chunk, targetLang) {
+  const SEP = '\n\n⟦LT⟧\n\n';
+  const joined = chunk.join(SEP);
+  const url =
+    `https://translate.googleapis.com/translate_a/single` +
+    `?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t` +
+    `&q=${encodeURIComponent(joined)}`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Google 翻译请求失败: HTTP ${res.status}`);
+
+  const data = await res.json();
+  const full = data[0].map((item) => item[0]).join('');
+  const parts = full.split(/\s*⟦\s*LT\s*⟧\s*/);
+
+  // 分隔符被翻译引擎破坏时，降级为逐条翻译
+  if (parts.length !== chunk.length) {
+    return Promise.all(chunk.map((text) => fetchGoogleSingle(text, targetLang)));
+  }
+
+  return parts.map((p) => p.trim());
+}
+
+async function fetchGoogleSingle(text, targetLang) {
+  const url =
+    `https://translate.googleapis.com/translate_a/single` +
+    `?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t` +
+    `&q=${encodeURIComponent(text)}`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Google 翻译请求失败: HTTP ${res.status}`);
+
+  const data = await res.json();
+  return data[0].map((item) => item[0]).join('').trim();
 }
 
 // ---- OpenAI 兼容翻译 ----

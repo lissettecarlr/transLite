@@ -23,10 +23,18 @@ const TRANSLATE_SELECTORS_AGGRESSIVE = [
 ];
 
 function getTranslateSelectors() {
-  if (state.settings?.aggressiveMode) {
-    return [...TRANSLATE_SELECTORS_BASE, ...TRANSLATE_SELECTORS_AGGRESSIVE].join(',');
+  const base = state.settings?.aggressiveMode
+    ? [...TRANSLATE_SELECTORS_BASE, ...TRANSLATE_SELECTORS_AGGRESSIVE]
+    : [...TRANSLATE_SELECTORS_BASE];
+
+  const custom = state.settings?.includeSelectors?.trim();
+  if (custom) {
+    custom.split(',').map((s) => s.trim()).filter(Boolean).forEach((s) => {
+      if (!base.includes(s)) base.push(s);
+    });
   }
-  return TRANSLATE_SELECTORS_BASE.join(',');
+
+  return base.join(',');
 }
 
 // 排除的父级容器（这些内部不翻译）
@@ -39,6 +47,7 @@ const EXCLUDE_PARENTS = [
 let state = {
   isTranslating: false,
   isTranslated: false,
+  translatedCount: 0,
   settings: null,
 };
 
@@ -47,11 +56,50 @@ async function init() {
   state.settings = await loadSettings();
   setupMessageListener();
   setupKeyboardShortcut();
+  setupMutationObserver();
 
   if (state.settings.autoTranslate && shouldAutoTranslate()) {
-    // 延迟一点，等页面渲染完成
     setTimeout(() => startTranslation(), 1500);
   }
+}
+
+// ---- MutationObserver：处理 SPA 动态插入/更新的内容 ----
+function setupMutationObserver() {
+  let debounceTimer = null;
+
+  const observer = new MutationObserver((mutations) => {
+    if (!state.isTranslated || state.isTranslating) return;
+
+    let shouldRetranslate = false;
+
+    for (const m of mutations) {
+      if (m.type === 'characterData') {
+        const parent = m.target.parentElement;
+        if (parent?.hasAttribute(LT.DONE_ATTR)) {
+          parent.querySelector(`.${LT.RESULT_CLASS}`)?.remove();
+          parent.removeAttribute(LT.DONE_ATTR);
+          state.translatedCount = Math.max(0, state.translatedCount - 1);
+          shouldRetranslate = true;
+        }
+      } else if (m.type === 'childList') {
+        const hasRealNodes = [...m.addedNodes].some(
+          (n) => n.nodeType === 1 && !n.classList?.contains(LT.RESULT_CLASS)
+        );
+        if (hasRealNodes) shouldRetranslate = true;
+      }
+    }
+
+    if (!shouldRetranslate) return;
+
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => startTranslation(), 800);
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,  // 监听文本节点原地更新（React reconciliation 复用节点时）
+  });
 }
 
 function shouldAutoTranslate() {
@@ -78,8 +126,10 @@ function setupMessageListener() {
         break;
 
       case 'START_TRANSLATION':
-        startTranslation().then(() => sendResponse({ ok: true }));
-        return true;
+        // 立即回复，不等翻译完成；状态通过 STATUS_UPDATE 推送给 popup
+        sendResponse({ ok: true });
+        startTranslation();
+        break;
 
       case 'REMOVE_TRANSLATION':
         removeTranslations();
@@ -90,7 +140,7 @@ function setupMessageListener() {
         sendResponse({
           isTranslating: state.isTranslating,
           isTranslated: state.isTranslated,
-          count: document.querySelectorAll(`[${LT.DONE_ATTR}]`).length,
+          count: state.translatedCount,
         });
         break;
 
@@ -168,30 +218,61 @@ function getTranslatableElements() {
 
   // 恢复文档顺序（从上到下依次翻译，视觉上更自然）
   result.reverse();
+
+  // 正文优先：main/article 内的元素先翻译，nav/aside/header/footer 最后翻译
+  // Array.sort 在 V8 中是稳定排序，同优先级内相对顺序不变
+  result.sort((a, b) => contentPriority(a) - contentPriority(b));
+
   return result;
 }
 
+function contentPriority(el) {
+  if (el.closest('main, article, [role="main"], [role="article"]')) return 0;
+  if (el.closest('nav, aside, header, footer, [role="navigation"], [role="complementary"], [role="banner"], [role="contentinfo"]')) return 2;
+  return 1;
+}
+
 function isVisible(el) {
-  if (el.offsetParent === null && el.tagName !== 'BODY') return false;
   const s = window.getComputedStyle(el);
-  return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+  if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+  // position:fixed 的元素 offsetParent 永远是 null，但它们仍然可见
+  if (el.offsetParent === null && s.position !== 'fixed' && s.position !== 'sticky' && el.tagName !== 'BODY') return false;
+  return true;
 }
 
-// 提取元素纯文本，忽略已插入的译文
+// 提取元素纯文本，忽略已插入的译文（递归遍历避免 cloneNode 开销）
 function getCleanText(el) {
-  const clone = el.cloneNode(true);
-  clone.querySelectorAll(`.${LT.RESULT_CLASS}`).forEach((n) => n.remove());
-  return clone.textContent || '';
+  let text = '';
+  for (const node of el.childNodes) {
+    if (node.nodeType === 3) {
+      text += node.textContent;
+    } else if (node.nodeType === 1 && !node.classList.contains(LT.RESULT_CLASS)) {
+      text += getCleanText(node);
+    }
+  }
+  return text;
 }
 
-// 判断文本是否已经是目标语言（当前只处理中文目标）
+// 判断文本是否已经是目标语言（支持中/日/韩/阿/泰/俄等独立书写系统）
 function isTargetLang(text) {
   const targetBase = (state.settings?.targetLang || 'zh-CN').split('-')[0].toLowerCase();
-  if (targetBase !== 'zh') return false;
   const t = text.trim();
   if (!t) return true;
-  const zhCount = (t.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g) || []).length;
-  return zhCount / t.length > 0.25;
+
+  const detectors = {
+    zh: { regex: /[\u4e00-\u9fff\u3400-\u4dbf]/g, threshold: 0.4 },
+    ja: { regex: /[\u3040-\u309f\u30a0-\u30ff]/g, threshold: 0.15 },
+    ko: { regex: /[\uac00-\ud7af\u3130-\u318f]/g, threshold: 0.3 },
+    ar: { regex: /[\u0600-\u06ff]/g, threshold: 0.3 },
+    th: { regex: /[\u0e00-\u0e7f]/g, threshold: 0.3 },
+    ru: { regex: /[\u0400-\u04ff]/g, threshold: 0.3 },
+  };
+
+  const detector = detectors[targetBase];
+  if (!detector) return false;
+
+  const matchCount = (t.match(detector.regex) || []).length;
+  return matchCount / t.length > detector.threshold;
 }
 
 // ---- 主翻译流程 ----
@@ -210,13 +291,12 @@ async function startTranslation() {
       return;
     }
 
-    const BATCH = state.settings?.service === 'openai' ? 10 : 15;
+    const BATCH = 10;
 
     for (let i = 0; i < elements.length; i += BATCH) {
-      if (!state.isTranslating) break; // 被中止
+      if (!state.isTranslating) break;
 
       const batch = elements.slice(i, i + BATCH);
-      // 跳过已经被翻译（可能前一批改了 DOM）
       const pending = batch.filter((el) => !el.hasAttribute(LT.DONE_ATTR));
       if (pending.length === 0) continue;
 
@@ -224,11 +304,7 @@ async function startTranslation() {
       pending.forEach((el) => el.setAttribute(LT.PENDING_ATTR, ''));
 
       try {
-        const res = await chrome.runtime.sendMessage({
-          type: 'TRANSLATE',
-          texts,
-          settings: state.settings,
-        });
+        const res = await sendTranslateMessage(texts);
 
         if (res?.success && res.translations) {
           pending.forEach((el, idx) => {
@@ -236,6 +312,7 @@ async function startTranslation() {
             if (tr) insertTranslation(el, tr);
             el.removeAttribute(LT.PENDING_ATTR);
             el.setAttribute(LT.DONE_ATTR, '');
+            state.translatedCount++;
           });
         } else {
           pending.forEach((el) => el.removeAttribute(LT.PENDING_ATTR));
@@ -292,6 +369,7 @@ function removeTranslations() {
   });
   state.isTranslated = false;
   state.isTranslating = false;
+  state.translatedCount = 0;
 
   chrome.runtime.sendMessage({ type: 'SET_ICON', active: false }).catch(() => {});
   notifyPopup();
@@ -331,11 +409,7 @@ async function showSelectionPopup(text) {
   }, 100);
 
   try {
-    const res = await chrome.runtime.sendMessage({
-      type: 'TRANSLATE',
-      texts: [text],
-      settings: state.settings,
-    });
+    const res = await sendTranslateMessage([text]);
     const resultEl = popup.querySelector('.lt-popup-result');
     resultEl.classList.remove('lt-loading');
     if (res?.success) {
@@ -385,7 +459,7 @@ function notifyPopup() {
     data: {
       isTranslating: state.isTranslating,
       isTranslated: state.isTranslated,
-      count: document.querySelectorAll(`[${LT.DONE_ATTR}]`).length,
+      count: state.translatedCount,
     },
   }).catch(() => {});
 }
@@ -393,24 +467,7 @@ function notifyPopup() {
 // ---- 加载设置 ----
 function loadSettings() {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(
-      {
-        service: 'google',
-        apiKey: '',
-        apiBaseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-5.4-nano',
-        targetLang: 'zh-CN',
-        autoTranslate: false,
-        aggressiveMode: false,
-        shortcut: 'Alt+T',
-        theme: 'underline',
-        translationColorMode: 'inherit',
-        translationColor: '#1a73e8',
-        systemPrompt: '',
-        excludeSelectors: '',
-      },
-      resolve
-    );
+    chrome.storage.sync.get(LT_DEFAULTS, resolve);
   });
 }
 
@@ -419,7 +476,31 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ---- 发送翻译请求（带一次重试，应对 Service Worker 被 Chrome 休眠后重唤的情况）----
+async function sendTranslateMessage(texts) {
+  try {
+    return await chrome.runtime.sendMessage({
+      type: 'TRANSLATE',
+      texts,
+      settings: state.settings,
+    });
+  } catch (err) {
+    // SW 被休眠时会抛 "Could not establish connection"，等一小会重试一次
+    if (err?.message?.includes('Could not establish connection') ||
+        err?.message?.includes('message channel closed')) {
+      await new Promise((r) => setTimeout(r, 600));
+      return chrome.runtime.sendMessage({
+        type: 'TRANSLATE',
+        texts,
+        settings: state.settings,
+      });
+    }
+    throw err;
+  }
 }
 
 // ---- 启动 ----

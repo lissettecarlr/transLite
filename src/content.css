@@ -139,3 +139,32 @@
   from { transform: translateY(12px); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }
 }
+
+/* ===== 暗色模式适配 ===== */
+@media (prefers-color-scheme: dark) {
+  #lt-selection-popup {
+    background: #2b2b2b;
+    border-color: #444;
+  }
+
+  #lt-selection-popup .lt-popup-header {
+    background: linear-gradient(135deg, #1565c0, #0d47a1);
+  }
+
+  #lt-selection-popup .lt-popup-original {
+    color: #ccc;
+    border-bottom-color: #444;
+  }
+
+  #lt-selection-popup .lt-popup-result {
+    color: #a8c7fa;
+  }
+
+  #lt-selection-popup .lt-loading {
+    color: #999;
+  }
+
+  #lt-error-toast {
+    background: #b71c1c;
+  }
+}

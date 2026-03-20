@@ -1,21 +1,5 @@
 const $ = (id) => document.getElementById(id);
 
-const DEFAULTS = {
-  service: 'google',
-  apiKey: '',
-  apiBaseUrl: 'https://api.openai.com/v1',
-  model: 'gpt-5.4-nano',
-  targetLang: 'zh-CN',
-  autoTranslate: false,
-  aggressiveMode: false,
-  shortcut: 'Alt+T',
-  theme: 'underline',
-  translationColorMode: 'inherit',
-  translationColor: '#1a73e8',
-  systemPrompt: '',
-  excludeSelectors: '',
-};
-
 async function init() {
   const settings = await load();
   applyToForm(settings);
@@ -30,15 +14,15 @@ function applyToForm(s) {
 
   // OpenAI 配置
   $('api-key').value = s.apiKey || '';
-  $('api-base-url').value = s.apiBaseUrl || DEFAULTS.apiBaseUrl;
-  $('model').value = s.model || DEFAULTS.model;
+  $('api-base-url').value = s.apiBaseUrl || LT_DEFAULTS.apiBaseUrl;
+  $('model').value = s.model || LT_DEFAULTS.model;
   $('system-prompt').value = s.systemPrompt || '';
 
   // 翻译行为
   $('target-lang').value = s.targetLang || 'zh-CN';
   $('auto-translate').checked = !!s.autoTranslate;
   $('aggressive-mode').checked = !!s.aggressiveMode;
-  $('shortcut-input').value = s.shortcut || DEFAULTS.shortcut;
+  $('shortcut-input').value = s.shortcut || LT_DEFAULTS.shortcut;
 
   // 主题
   const radioTheme = document.querySelector(`input[name="theme"][value="${s.theme || 'underline'}"]`);
@@ -54,6 +38,7 @@ function applyToForm(s) {
 
   // 高级
   $('exclude-selectors').value = s.excludeSelectors || '';
+  $('include-selectors').value = s.includeSelectors || '';
 }
 
 function collectFromForm() {
@@ -63,17 +48,18 @@ function collectFromForm() {
   return {
     service,
     apiKey: $('api-key').value.trim(),
-    apiBaseUrl: $('api-base-url').value.trim() || DEFAULTS.apiBaseUrl,
-    model: $('model').value.trim() || DEFAULTS.model,
+    apiBaseUrl: $('api-base-url').value.trim() || LT_DEFAULTS.apiBaseUrl,
+    model: $('model').value.trim() || LT_DEFAULTS.model,
     systemPrompt: $('system-prompt').value.trim(),
     targetLang: $('target-lang').value,
     autoTranslate: $('auto-translate').checked,
     aggressiveMode: $('aggressive-mode').checked,
-    shortcut: $('shortcut-input').value || DEFAULTS.shortcut,
+    shortcut: $('shortcut-input').value || LT_DEFAULTS.shortcut,
     theme,
     translationColorMode: document.querySelector('input[name="translation-color-mode"]:checked')?.value || 'inherit',
     translationColor: $('translation-color').value,
     excludeSelectors: $('exclude-selectors').value.trim(),
+    includeSelectors: $('include-selectors').value.trim(),
   };
 }
 
@@ -134,7 +120,7 @@ function bindEvents() {
     shortcutInput.placeholder = '点击后按下快捷键组合…';
   });
   $('shortcut-clear').addEventListener('click', () => {
-    shortcutInput.value = DEFAULTS.shortcut;
+    shortcutInput.value = LT_DEFAULTS.shortcut;
   });
 
   // 高级设置折叠
@@ -151,7 +137,7 @@ function bindEvents() {
   // 重置
   $('btn-reset').addEventListener('click', () => {
     if (confirm('确定要恢复所有默认设置吗？')) {
-      applyToForm(DEFAULTS);
+      applyToForm(LT_DEFAULTS);
       showSaveStatus('已恢复默认设置', false);
     }
   });
@@ -205,7 +191,7 @@ function showSaveStatus(msg, isError) {
 }
 
 function load() {
-  return new Promise((resolve) => chrome.storage.sync.get(DEFAULTS, resolve));
+  return new Promise((resolve) => chrome.storage.sync.get(LT_DEFAULTS, resolve));
 }
 
 init();

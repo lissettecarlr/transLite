@@ -198,6 +198,11 @@
             <input type="text" id="exclude-selectors" placeholder=".no-translate, #header, nav" />
             <div class="field-hint">多个选择器用英文逗号分隔，这些元素内的文字不会被翻译</div>
           </div>
+          <div class="field">
+            <label class="field-label" for="include-selectors">额外翻译的 CSS 选择器</label>
+            <input type="text" id="include-selectors" placeholder="span.note, div.footnote, small" />
+            <div class="field-hint">补充翻译非标准元素，例如以 span/div 渲染的段落文字</div>
+          </div>
         </div>
       </section>
 
@@ -208,6 +213,7 @@
     </main>
   </div>
 
+  <script src="../defaults.js"></script>
   <script src="options.js"></script>
 </body>
 </html>
