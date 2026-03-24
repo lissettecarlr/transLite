@@ -20,7 +20,6 @@
 ![](./images/2.png)
 
 
-
 ## 安装
 
 1. 打开 Chrome，地址栏输入 `chrome://extensions`

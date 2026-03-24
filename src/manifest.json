@@ -3,7 +3,7 @@
   "name": "久远的翻译工具",
   "version": "1.0.0",
   "description": "轻量级双语对照翻译，支持 Google 免费翻译及 OpenAI 兼容接口",
-  "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
+  "permissions": ["storage", "activeTab", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

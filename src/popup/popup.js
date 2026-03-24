@@ -106,10 +106,12 @@ function bindEvents() {
     $('service-badge').textContent = serviceName[settings.service] || 'Google';
   });
 
-  // 监听来自 content script 的状态更新
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === 'STATUS_UPDATE' && msg.data) {
-      updateUI(msg.data);
+  // content → SW 写入 session，popup 监听（content 的 sendMessage 进不了 popup）
+  chrome.storage.session.onChanged.addListener((changes, area) => {
+    if (area !== 'session' || !currentTab?.id) return;
+    const key = `ltStatus_${currentTab.id}`;
+    if (changes[key]?.newValue != null) {
+      updateUI(changes[key].newValue);
     }
   });
 }

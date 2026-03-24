@@ -105,7 +105,20 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 // ---- 消息处理 ----
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // content script 发来的状态同步：必须 sendResponse，否则 Promise 会 reject / 控制台报 lastError
+  // 状态用 session 写给 popup 读，避免 runtime.sendMessage 多 listener 抢答 sendResponse
+  if (message.type === 'STATUS_UPDATE') {
+    sendResponse({ ok: true });
+    const tabId = sender.tab?.id;
+    if (tabId != null && message.data) {
+      chrome.storage.session
+        .set({ [`ltStatus_${tabId}`]: message.data })
+        .catch(() => {});
+    }
+    return false;
+  }
+
   if (message.type === 'TRANSLATE') {
     handleTranslation(message.texts, message.settings)
       .then(sendResponse)

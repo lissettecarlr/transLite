@@ -9,7 +9,7 @@ const LT = {
   POPUP_ID: 'lt-selection-popup',
 };
 
-// 需要翻译的元素选择器（取文章正文级别的块级元素）
+// 激进模式：全页块级文本（含导航风险，由用户显式开启）
 const TRANSLATE_SELECTORS_BASE = [
   'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'li', 'dt', 'dd',
@@ -22,10 +22,38 @@ const TRANSLATE_SELECTORS_AGGRESSIVE = [
   'button', 'a', 'label', 'span', 'div',
 ];
 
+// 非激进模式：只在「正文容器」内匹配，避免 GitHub 首页 / 营销页 main 里大量 p、h* 被插入译文撑坏 flex/grid
+const NON_AGGRESSIVE_SCOPES = [
+  'article.markdown-body',
+  '.markdown-body',
+  '#readme',
+  '[itemprop="articleBody"]',
+  '.comment-body', // GitHub Issue/PR 讨论区
+];
+
+const NON_AGGRESSIVE_TAGS = [
+  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'li', 'dt', 'dd',
+  'td', 'th', 'caption',
+  'blockquote', 'figcaption',
+  'summary',
+];
+
+function buildNonAggressiveSelectors() {
+  const selectors = [];
+  for (const scope of NON_AGGRESSIVE_SCOPES) {
+    for (const tag of NON_AGGRESSIVE_TAGS) {
+      selectors.push(`${scope} ${tag}`);
+    }
+  }
+  return selectors;
+}
+
 function getTranslateSelectors() {
-  const base = state.settings?.aggressiveMode
+  const aggressive = !!state.settings?.aggressiveMode;
+  const base = aggressive
     ? [...TRANSLATE_SELECTORS_BASE, ...TRANSLATE_SELECTORS_AGGRESSIVE]
-    : [...TRANSLATE_SELECTORS_BASE];
+    : buildNonAggressiveSelectors();
 
   const custom = state.settings?.includeSelectors?.trim();
   if (custom) {
@@ -35,6 +63,24 @@ function getTranslateSelectors() {
   }
 
   return base.join(',');
+}
+
+/**
+ * 关闭「翻译按钮/导航/链接」时，跳过站点顶栏、主导航等 UI 区域里的 p/h/summary 等，
+ * 否则仍会匹配并插入译文，破坏布局（例如 GitHub 仓库页）。
+ */
+function shouldSkipNonAggressiveUiChrome(el) {
+  if (state.settings?.aggressiveMode) return false;
+
+  if (el.closest('nav, [role="navigation"]')) return true;
+
+  const hdr = el.closest('header');
+  if (hdr && !hdr.closest('main, article, [role="main"], [role="article"]')) return true;
+
+  const ftr = el.closest('footer');
+  if (ftr && !ftr.closest('main, article, [role="main"], [role="article"]')) return true;
+
+  return false;
 }
 
 // 排除的父级容器（这些内部不翻译）
@@ -50,6 +96,31 @@ let state = {
   translatedCount: 0,
   settings: null,
 };
+
+function isRuntimeAvailable() {
+  try {
+    return !!chrome?.runtime?.id;
+  } catch (_) {
+    return false;
+  }
+}
+
+function sendRuntimeMessageSafe(message, callback) {
+  if (!isRuntimeAvailable()) return null;
+  try {
+    if (typeof callback === 'function') {
+      chrome.runtime.sendMessage(message, callback);
+      return null;
+    }
+    const maybePromise = chrome.runtime.sendMessage(message);
+    if (maybePromise && typeof maybePromise.catch === 'function') {
+      return maybePromise.catch(() => null);
+    }
+    return Promise.resolve(null);
+  } catch (_) {
+    return Promise.resolve(null);
+  }
+}
 
 // ---- 初始化 ----
 async function init() {
@@ -199,6 +270,7 @@ function getTranslatableElements() {
     if (el.hasAttribute(LT.DONE_ATTR)) continue;
     if (el.closest(fullExclude)) continue;
     if (!isVisible(el)) continue;
+    if (shouldSkipNonAggressiveUiChrome(el)) continue;
 
     const text = getCleanText(el);
     if (!text || text.trim().length < 4) continue;
@@ -282,7 +354,7 @@ async function startTranslation() {
   notifyPopup();
 
   // 更新图标为激活状态
-  chrome.runtime.sendMessage({ type: 'SET_ICON', active: true }).catch(() => {});
+  sendRuntimeMessageSafe({ type: 'SET_ICON', active: true });
 
   try {
     const elements = getTranslatableElements();
@@ -371,7 +443,7 @@ function removeTranslations() {
   state.isTranslating = false;
   state.translatedCount = 0;
 
-  chrome.runtime.sendMessage({ type: 'SET_ICON', active: false }).catch(() => {});
+  sendRuntimeMessageSafe({ type: 'SET_ICON', active: false });
   notifyPopup();
 }
 
@@ -453,15 +525,17 @@ function showError(msg) {
 }
 
 // ---- 通知 popup 状态更新 ----
+// 必须用回调并读取 lastError，否则控制台会标黄 "Unchecked runtime.lastError"（Promise 的 catch 消不掉）
 function notifyPopup() {
-  chrome.runtime.sendMessage({
-    type: 'STATUS_UPDATE',
-    data: {
-      isTranslating: state.isTranslating,
-      isTranslated: state.isTranslated,
-      count: state.translatedCount,
-    },
-  }).catch(() => {});
+  const data = {
+    isTranslating: state.isTranslating,
+    isTranslated: state.isTranslated,
+    count: state.translatedCount,
+  };
+  sendRuntimeMessageSafe({ type: 'STATUS_UPDATE', data }, () => {
+    if (!isRuntimeAvailable()) return;
+    void chrome.runtime.lastError;
+  });
 }
 
 // ---- 加载设置 ----
