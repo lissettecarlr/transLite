@@ -22,38 +22,11 @@ const TRANSLATE_SELECTORS_AGGRESSIVE = [
   'button', 'a', 'label', 'span', 'div',
 ];
 
-// 非激进模式：只在「正文容器」内匹配，避免 GitHub 首页 / 营销页 main 里大量 p、h* 被插入译文撑坏 flex/grid
-const NON_AGGRESSIVE_SCOPES = [
-  'article.markdown-body',
-  '.markdown-body',
-  '#readme',
-  '[itemprop="articleBody"]',
-  '.comment-body', // GitHub Issue/PR 讨论区
-];
-
-const NON_AGGRESSIVE_TAGS = [
-  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'li', 'dt', 'dd',
-  'td', 'th', 'caption',
-  'blockquote', 'figcaption',
-  'summary',
-];
-
-function buildNonAggressiveSelectors() {
-  const selectors = [];
-  for (const scope of NON_AGGRESSIVE_SCOPES) {
-    for (const tag of NON_AGGRESSIVE_TAGS) {
-      selectors.push(`${scope} ${tag}`);
-    }
-  }
-  return selectors;
-}
-
 function getTranslateSelectors() {
   const aggressive = !!state.settings?.aggressiveMode;
   const base = aggressive
     ? [...TRANSLATE_SELECTORS_BASE, ...TRANSLATE_SELECTORS_AGGRESSIVE]
-    : buildNonAggressiveSelectors();
+    : [...TRANSLATE_SELECTORS_BASE];
 
   const custom = state.settings?.includeSelectors?.trim();
   if (custom) {
@@ -66,8 +39,9 @@ function getTranslateSelectors() {
 }
 
 /**
- * 关闭「翻译按钮/导航/链接」时，跳过站点顶栏、主导航等 UI 区域里的 p/h/summary 等，
- * 否则仍会匹配并插入译文，破坏布局（例如 GitHub 仓库页）。
+ * 非激进模式下，跳过导航/页眉/页脚里的 UI 元素，以及链接密度 > 50% 的导航型段落。
+ * 链接密度是沉浸式翻译等工具的核心保护手段：菜单/面包屑/标签云里的 p/li 大部分文字
+ * 都在 <a> 里，通过这个比例可以可靠地区分"正文段落"和"导航链接列表"。
  */
 function shouldSkipNonAggressiveUiChrome(el) {
   if (state.settings?.aggressiveMode) return false;
@@ -79,6 +53,18 @@ function shouldSkipNonAggressiveUiChrome(el) {
 
   const ftr = el.closest('footer');
   if (ftr && !ftr.closest('main, article, [role="main"], [role="article"]')) return true;
+
+  // 链接密度检测：超过 50% 的字符在 <a> 内则视为导航型元素，跳过
+  const fullText = getCleanText(el).trim();
+  if (fullText.length > 0) {
+    let anchorLen = 0;
+    for (const a of el.querySelectorAll('a')) {
+      for (const node of a.childNodes) {
+        if (node.nodeType === 3) anchorLen += node.textContent.length;
+      }
+    }
+    if (anchorLen / fullText.length > 0.5) return true;
+  }
 
   return false;
 }

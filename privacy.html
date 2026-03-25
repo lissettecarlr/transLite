@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>久远的翻译工具 — 隐私权政策</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+      max-width: 42rem;
+      margin: 2rem auto;
+      padding: 0 1.25rem;
+      color: #1a1a1a;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e8e8e8; background: #121212; }
+      a { color: #8ab4f8; }
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    .meta { font-size: 0.875rem; opacity: 0.75; margin-bottom: 1.5rem; }
+    h2 { font-size: 1.1rem; margin-top: 1.75rem; }
+    ul { padding-left: 1.25rem; }
+    li { margin: 0.35rem 0; }
+    .note { font-size: 0.9rem; opacity: 0.85; border-left: 3px solid #1a73e8; padding-left: 0.75rem; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <h1>久远的翻译工具 — 隐私权政策</h1>
+  <p class="meta">最后更新日期：2025 年 3 月 25 日</p>
+
+  <p>
+    本政策说明浏览器扩展程序「久远的翻译工具」（以下简称「本扩展」）如何处理与您相关的信息。
+    使用本扩展即表示您理解并同意本政策。若您不同意，请停止使用本扩展。
+  </p>
+
+  <h2>1. 我们是谁</h2>
+  <p>
+    本扩展由其在 <a href="https://chrome.google.com/webstore" rel="noopener noreferrer">Chrome 网上应用店</a> 上架信息中所示的开发者提供。
+    有关联系方式，请以应用店页面上的开发者联系信息为准。
+  </p>
+
+  <h2>2. 本扩展会处理哪些信息</h2>
+  <ul>
+    <li>
+      <strong>您浏览的网页中的可见文本</strong>：当您开启翻译、自动翻译或使用「翻译选中文字」等功能时，本扩展会从当前页面读取需要翻译的文本片段，用于生成对照译文并显示在页面上。
+    </li>
+    <li>
+      <strong>您选中的文字</strong>：通过右键菜单「翻译选中文字」时，会处理您选中的内容。
+    </li>
+    <li>
+      <strong>您的设置与偏好</strong>：例如翻译服务类型（Google 免费翻译或 OpenAI 兼容接口）、目标语言、API 地址、模型名称、主题与显示选项、自动翻译开关等，保存在浏览器的扩展存储中。
+    </li>
+    <li>
+      <strong>API 密钥（可选）</strong>：若您选择使用 OpenAI 兼容接口，您自行填写的 API Key 会保存在本机扩展存储中，仅用于向您指定的服务端发起翻译请求。
+    </li>
+    <li>
+      <strong>会话状态</strong>：为在弹出窗口中显示当前标签页的翻译状态等，本扩展可能在浏览器会话存储中保存与标签页相关的简短状态信息；关闭浏览器或会话过期后通常不再保留。
+    </li>
+  </ul>
+
+  <h2>3. 信息如何被使用</h2>
+  <ul>
+    <li>仅在您主动使用翻译相关功能时，才会读取页面文本并请求翻译结果。</li>
+    <li>翻译请求由本扩展在本地发起，将待译文本发送至您所选择的翻译服务：</li>
+  </ul>
+  <ul>
+    <li>
+      <strong>Google 翻译（translate.googleapis.com）</strong>：待译文本会通过网络请求发送至 Google 的翻译接口，受其隐私政策与服务条款约束。
+    </li>
+    <li>
+      <strong>OpenAI 兼容 API</strong>：待译文本与您的 API Key 会发送至您在设置中填写的 API 基础地址（例如 OpenAI 或第三方兼容服务），受其各自隐私政策与服务条款约束。
+    </li>
+  </ul>
+  <p class="note">
+    本扩展<strong>不会</strong>将您的网页内容或翻译记录上传到开发者自有服务器用于分析、广告或出售。开发者无法访问您设备上存储的 API Key 或浏览历史，除非您主动向开发者提供。
+  </p>
+
+  <h2>4. 数据存储位置与权限说明</h2>
+  <ul>
+    <li>用户设置等主要保存在 <code>chrome.storage.sync</code>（由 Chrome 同步到您登录的 Google 账号下的扩展数据，若您启用同步）。</li>
+    <li>部分临时状态保存在 <code>chrome.storage.session</code>。</li>
+    <li>本扩展声明了访问所有网站（<code>&lt;all_urls&gt;</code>）的权限，以便在任意网页上注入内容脚本并完成翻译；除执行翻译与界面展示所必需外，不会将整页 HTML 等无关数据外传。</li>
+  </ul>
+
+  <h2>5. 第三方服务</h2>
+  <p>
+    翻译质量与可用性取决于您选择的第三方服务。请自行查阅：
+    <a href="https://policies.google.com/privacy" rel="noopener noreferrer">Google 隐私权政策</a>
+    以及您所使用的 OpenAI 或兼容服务商的隐私说明。
+  </p>
+
+  <h2>6. 您的选择与权利</h2>
+  <ul>
+    <li>您可随时在扩展选项中关闭自动翻译、更换服务或清除/修改 API 配置。</li>
+    <li>您可通过 Chrome 的扩展管理卸载本扩展，卸载后本地扩展存储中的相关数据将按浏览器机制移除。</li>
+    <li>若您使用 Chrome 同步，可在 Google 账号的 Chrome 同步设置中管理扩展数据同步行为。</li>
+  </ul>
+
+  <h2>7. 儿童</h2>
+  <p>本扩展面向一般互联网用户，不面向儿童单独收集个人信息。若您作为家长认为儿童误提交了敏感信息，请通过应用店提供的渠道联系开发者。</p>
+
+  <h2>8. 本政策的变更</h2>
+  <p>我们可能会更新本政策；重大变更时将在本页面更新「最后更新日期」。请定期查阅。</p>
+
+  <h2>9. 联系我们</h2>
+  <p>
+    若对本政策或数据处理有疑问，请通过 Chrome 网上应用店中本扩展详情页的开发者联系方式或支持入口与我们联系。
+  </p>
+</body>
+</html>
