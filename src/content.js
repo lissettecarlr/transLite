@@ -39,6 +39,27 @@ function getTranslateSelectors() {
 }
 
 /**
+ * 非激进模式下，判断元素是否"可点击"：原生交互标签、href/onclick、交互 ARIA 角色、
+ * tabindex>=0、或 cursor:pointer。满足任一条件则跳过翻译，避免破坏按钮/链接布局。
+ */
+function isClickable(el) {
+  const tag = el.tagName.toLowerCase();
+  if (['button', 'a', 'select', 'textarea', 'input'].includes(tag)) return true;
+  if (el.hasAttribute('href') || el.hasAttribute('onclick')) return true;
+  const role = el.getAttribute('role');
+  if (['button', 'link', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'treeitem', 'gridcell'].includes(role)) return true;
+  const tabindex = el.getAttribute('tabindex');
+  if (tabindex !== null && parseInt(tabindex, 10) >= 0) return true;
+  if (window.getComputedStyle(el).cursor === 'pointer') return true;
+  // 元素嵌套在可点击祖先内（如 <span> 在 <a> 里）
+  if (el.closest('a[href], button, [role="button"], [role="link"], [onclick]')) return true;
+  // td/th/li/dt/dd 是容器型选择器，内部任意深度含链接或按钮时视为交互容器，直接跳过
+  const CONTAINER_TAGS = ['td', 'th', 'li', 'dt', 'dd', 'summary'];
+  if (CONTAINER_TAGS.includes(tag) && el.querySelector('a[href], button')) return true;
+  return false;
+}
+
+/**
  * 非激进模式下，跳过导航/页眉/页脚里的 UI 元素，以及链接密度 > 50% 的导航型段落。
  * 链接密度是沉浸式翻译等工具的核心保护手段：菜单/面包屑/标签云里的 p/li 大部分文字
  * 都在 <a> 里，通过这个比例可以可靠地区分"正文段落"和"导航链接列表"。
@@ -257,6 +278,7 @@ function getTranslatableElements() {
     if (el.closest(fullExclude)) continue;
     if (!isVisible(el)) continue;
     if (shouldSkipNonAggressiveUiChrome(el)) continue;
+    if (!state.settings?.aggressiveMode && isClickable(el)) continue;
 
     const text = getCleanText(el);
     if (!text || text.trim().length < 4) continue;
