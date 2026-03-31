@@ -48,22 +48,18 @@
 
   <div class="actions">
     <button id="btn-translate" class="btn-primary">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/>
-      </svg>
+      <span id="btn-icon" class="btn-icon-wrap">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/>
+        </svg>
+      </span>
       <span id="btn-text">翻译此页面</span>
-    </button>
-    <button id="btn-clear" class="btn-secondary hidden">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>
-      </svg>
-      关闭翻译
     </button>
   </div>
 
   <div class="footer">
     <span class="service-badge" id="service-badge">Google</span>
-    <span class="hint">Alt+T 快速切换</span>
+    <span class="hint" id="shortcut-hint">Alt+T 快速切换</span>
   </div>
 
   <script src="../defaults.js"></script>

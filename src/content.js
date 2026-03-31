@@ -53,9 +53,19 @@ function isClickable(el) {
   if (window.getComputedStyle(el).cursor === 'pointer') return true;
   // 元素嵌套在可点击祖先内（如 <span> 在 <a> 里）
   if (el.closest('a[href], button, [role="button"], [role="link"], [onclick]')) return true;
-  // td/th/li/dt/dd 是容器型选择器，内部任意深度含链接或按钮时视为交互容器，直接跳过
+  // 容器型标签：内部交互元素文字占比 > 50% 时视为"本质上是个按钮/链接"，跳过翻译
+  // 避免误杀正文（如 GitHub release notes 里的 @mention/#issue 只占少数）
   const CONTAINER_TAGS = ['td', 'th', 'li', 'dt', 'dd', 'summary'];
-  if (CONTAINER_TAGS.includes(tag) && el.querySelector('a[href], button')) return true;
+  if (CONTAINER_TAGS.includes(tag)) {
+    const fullText = getCleanText(el).trim();
+    if (fullText.length > 0) {
+      let interactiveLen = 0;
+      for (const node of el.querySelectorAll('a[href], button')) {
+        interactiveLen += getCleanText(node).length;
+      }
+      if (interactiveLen / fullText.length > 0.5) return true;
+    }
+  }
   return false;
 }
 
@@ -199,8 +209,14 @@ function setupMessageListener() {
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
       case 'TOGGLE_TRANSLATION':
-        if (state.isTranslated) removeTranslations();
+        if (state.isTranslating) stopTranslation();
+        else if (state.isTranslated) removeTranslations();
         else startTranslation();
+        break;
+
+      case 'STOP_TRANSLATION':
+        stopTranslation();
+        sendResponse({ ok: true });
         break;
 
       case 'START_TRANSLATION':
@@ -238,7 +254,8 @@ function setupKeyboardShortcut() {
   document.addEventListener('keydown', (e) => {
     if (!matchesShortcut(e, state.settings?.shortcut || 'Alt+T')) return;
     e.preventDefault();
-    if (state.isTranslated) removeTranslations();
+    if (state.isTranslating) stopTranslation();
+    else if (state.isTranslated) removeTranslations();
     else startTranslation();
   });
 }
@@ -321,16 +338,34 @@ function isVisible(el) {
 }
 
 // 提取元素纯文本，忽略已插入的译文（递归遍历避免 cloneNode 开销）
+// 跳过不可见/辅助元素：hidden、sr-only、popover tooltip、aria-hidden
 function getCleanText(el) {
   let text = '';
   for (const node of el.childNodes) {
     if (node.nodeType === 3) {
       text += node.textContent;
     } else if (node.nodeType === 1 && !node.classList.contains(LT.RESULT_CLASS)) {
+      if (shouldSkipInvisibleNode(node)) continue;
       text += getCleanText(node);
     }
   }
   return text;
+}
+
+function shouldSkipInvisibleNode(node) {
+  const tag = node.tagName.toLowerCase();
+  // 脚本/样式/嵌套文档：文字内容不是给用户看的
+  if (['script', 'style', 'noscript', 'template', 'iframe'].includes(tag)) return true;
+  // DOM hidden 属性：元素不可见
+  if (node.hasAttribute('hidden')) return true;
+  // CSS sr-only / visually-hidden：仅屏幕阅读器可见，不是页面实际文字
+  const cls = node.classList;
+  if (cls.contains('sr-only') || cls.contains('visually-hidden') || cls.contains('screen-reader-only')) return true;
+  // popover tooltip（如 GitHub <tool-tip popover="manual" class="sr-only">）
+  if (node.hasAttribute('popover')) return true;
+  // 自定义 tooltip 标签
+  if (tag === 'tool-tip' || tag === 'tooltip') return true;
+  return false;
 }
 
 // 判断文本是否已经是目标语言（支持中/日/韩/阿/泰/俄等独立书写系统）
@@ -436,6 +471,14 @@ function insertTranslation(el, translation) {
   }
 
   el.appendChild(span);
+}
+
+// ---- 停止翻译（保留已翻译内容，不清除）----
+function stopTranslation() {
+  if (!state.isTranslating) return;
+  // 将 isTranslating 置 false，startTranslation 循环下次 batch 检查时会自动 break
+  // finally 块会负责将 isTranslated 置 true 并 notifyPopup
+  state.isTranslating = false;
 }
 
 // ---- 移除所有译文 ----
