@@ -316,6 +316,9 @@ function getTranslatableElements() {
     result.push(el);
   }
 
+  // 抢救被 dominated 父元素中的孤儿文本节点
+  rescueOrphanText(dominated, fullExclude, result);
+
   // 恢复文档顺序（从上到下依次翻译，视觉上更自然）
   result.reverse();
 
@@ -324,6 +327,50 @@ function getTranslatableElements() {
   result.sort((a, b) => contentPriority(a) - contentPriority(b));
 
   return result;
+}
+
+/**
+ * 当内层子元素被选中后，外层父元素会被标记为 dominated 而跳过。
+ * 但如果父元素本身还有直属文本节点（不在任何子元素内），这些文本就会丢失。
+ * 典型场景：GitHub 渲染 markdown 时剥离 <example> 等自定义标签后，
+ * 文本变成裸文本节点暴露在 <li> 里。
+ * 此函数将这些孤儿文本包裹进 <span class="lt-wrap"> 以便独立翻译。
+ */
+function rescueOrphanText(dominated, fullExclude, result) {
+  const selector = getTranslateSelectors();
+  for (const el of dominated) {
+    if (typeof el.matches !== 'function' || !el.matches(selector)) continue;
+    if (el.hasAttribute(LT.DONE_ATTR)) continue;
+    if (el.closest(fullExclude)) continue;
+    if (!isVisible(el)) continue;
+    if (shouldSkipNonAggressiveUiChrome(el)) continue;
+    if (el.querySelector(`.${LT.WRAP_CLASS}`)) continue;
+
+    // 收集连续的直属文本节点分组
+    let group = [];
+    const groups = [];
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3 && node.textContent.trim()) {
+        group.push(node);
+      } else {
+        if (group.length) { groups.push(group); group = []; }
+      }
+    }
+    if (group.length) groups.push(group);
+
+    for (const g of groups) {
+      const text = g.map((n) => n.textContent).join('').trim();
+      if (text.length < 4) continue;
+      if (isTargetLang(text)) continue;
+      if (isCountBadge(text)) continue;
+
+      const wrap = document.createElement('span');
+      wrap.className = LT.WRAP_CLASS;
+      el.insertBefore(wrap, g[0]);
+      for (const tn of g) wrap.appendChild(tn);
+      result.push(wrap);
+    }
+  }
 }
 
 function contentPriority(el) {
@@ -349,6 +396,7 @@ function getCleanText(el) {
       text += node.textContent;
     } else if (node.nodeType === 1 && !node.classList.contains(LT.RESULT_CLASS)) {
       if (shouldSkipInvisibleNode(node)) continue;
+      if (node.hasAttribute(LT.DONE_ATTR)) continue;
       text += getCleanText(node);
     }
   }
@@ -515,6 +563,12 @@ function stopTranslation() {
 // ---- 移除所有译文 ----
 function removeTranslations() {
   document.querySelectorAll(`.${LT.RESULT_CLASS}`).forEach((el) => el.remove());
+  // 还原 lt-wrap 包裹：把文本节点放回原父级，删除 wrapper span
+  document.querySelectorAll(`.${LT.WRAP_CLASS}`).forEach((wrap) => {
+    const parent = wrap.parentNode;
+    while (wrap.firstChild) parent.insertBefore(wrap.firstChild, wrap);
+    wrap.remove();
+  });
   document.querySelectorAll(`[${LT.DONE_ATTR}]`).forEach((el) => {
     el.removeAttribute(LT.DONE_ATTR);
   });
