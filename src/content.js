@@ -302,6 +302,9 @@ function getTranslatableElements() {
     // 跳过超长容器（说明是包含子元素的父容器，不应直接翻译）
     if (text.trim().length > 1500) continue;
     if (isTargetLang(text)) continue;
+    // 跳过纯 ASCII 的"数字 + 单词"短文本（如 "2 stars"、"15 forks"），
+    // 这类 UI 计数徽章由翻译服务随机决定是否翻译，容易造成不一致。
+    if (isCountBadge(text)) continue;
 
     // 将所有祖先标记为 dominated，确保父容器不会再被选中
     let ancestor = el.parentElement;
@@ -365,6 +368,34 @@ function shouldSkipInvisibleNode(node) {
   if (node.hasAttribute('popover')) return true;
   // 自定义 tooltip 标签
   if (tag === 'tool-tip' || tag === 'tooltip') return true;
+  return false;
+}
+
+// 常见英文功能词：出现这些词说明文本是真实句子，不应视为 UI 标签
+const COUNT_BADGE_SKIP_WORDS = new Set([
+  'a', 'an', 'the', 'is', 'are', 'was', 'were', 'has', 'have', 'had',
+  'be', 'been', 'will', 'would', 'could', 'should', 'may', 'might',
+  'must', 'do', 'does', 'did', 'for', 'of', 'to', 'in', 'on', 'at',
+  'by', 'with', 'from', 'as', 'into', 'this', 'that', 'these', 'those',
+  'it', 'its', 'and', 'or', 'but', 'not', 'if', 'any', 'all', 'both',
+  'each', 'few', 'some', 'up', 'out', 'can', 'no', 'new', 'left',
+]);
+
+// 判断是否是 UI 计数徽章/栏目标签，这类文本翻译后容易产生不一致，直接跳过。
+// 逻辑：纯 ASCII + 无英文功能词 + 所有 token ≤ 10 字符 + 含数字（或单个短词）
+function isCountBadge(text) {
+  const t = text.trim().replace(/\s+/g, ' ');  // 折叠空白
+  if (/[^\x00-\x7f]/.test(t)) return false;    // 含非 ASCII → 不是徽章
+  if (t.length > 80) return false;
+  const tokens = t.split(' ');
+  // 含英文功能词 → 真实句子，不跳过（如 "2 pages left to read"）
+  if (tokens.some((tok) => COUNT_BADGE_SKIP_WORDS.has(tok.toLowerCase()))) return false;
+  // 所有 token 必须是短词（≤ 10 字符），排除真实内容长词
+  if (!tokens.every((tok) => tok.length <= 10)) return false;
+  // 含数字 token → 计数徽章（"2 stars"、"Starred 2 Lists Star 2 Lists"）
+  if (tokens.some((tok) => /^[\d,.]+[kmb]?$/i.test(tok))) return true;
+  // 单个纯字母短词 → UI 栏目标签（"Stars"、"Forks"、"Watching"）
+  if (tokens.length === 1 && /^[A-Za-z]{2,10}$/.test(tokens[0])) return true;
   return false;
 }
 
