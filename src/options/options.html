@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>轻量翻译 — 设置</title>
+  <title>久远的翻译工具 — 设置</title>
   <link rel="stylesheet" href="options.css" />
 </head>
 <body>
@@ -13,11 +13,11 @@
         <div class="logo">
           <img src="../images/1.png" width="28" height="28" style="border-radius:7px;display:block;" />
           <div>
-            <h1>轻量翻译</h1>
+            <h1>久远的翻译工具</h1>
             <p>Lite Translate Settings</p>
           </div>
         </div>
-        <div id="save-status" class="save-status"></div>
+        <div id="save-status" class="save-status" role="status" aria-live="polite"></div>
       </div>
     </header>
 
@@ -35,15 +35,15 @@
             <label class="radio-card" data-value="google">
               <input type="radio" name="service" value="google" />
               <div class="radio-content">
-                <span class="radio-title">Google 翻译（免费）</span>
+                <span class="radio-title">Google 翻译</span>
                 <span class="radio-desc">无需配置，直接使用，有频率限制</span>
               </div>
             </label>
             <label class="radio-card" data-value="openai">
               <input type="radio" name="service" value="openai" />
               <div class="radio-content">
-                <span class="radio-title">OpenAI 兼容接口</span>
-                <span class="radio-desc">支持 OpenAI / DeepSeek / 通义千问 / Moonshot 等</span>
+                <span class="radio-title">AI 模型翻译</span>
+                <span class="radio-desc">自带 API Key，费用由所选服务商收取</span>
               </div>
             </label>
           </div>
@@ -52,29 +52,51 @@
         <!-- OpenAI 配置区，默认隐藏 -->
         <div id="openai-config" class="openai-section hidden">
           <div class="field">
+            <label class="field-label" for="provider">服务提供方</label>
+            <select id="provider"><option value="qwen">通义千问 · 阿里云中国内地</option><option value="openai">OpenAI 官方</option><option value="custom">其他兼容接口</option><option value="local">本机 vLLM 服务</option></select>
+            <div class="field-hint">选择预设会填写地址和模型；其他地域或工作空间专属地址可直接修改。</div>
+          </div>
+          <div class="field">
             <label class="field-label" for="api-key">API Key <span class="required">*</span></label>
             <div class="input-wrap">
-              <input type="password" id="api-key" placeholder="sk-..." autocomplete="off" />
+              <input type="password" id="api-key" placeholder="输入 API Key" autocomplete="off" />
               <button class="toggle-password" type="button" title="显示/隐藏">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               </button>
             </div>
           </div>
 
+          <div class="field key-controls">
+            <p id="key-status" class="field-hint" role="status"></p>
+            <label><input type="checkbox" id="remember-key"> 用密码加密记住新密钥</label>
+            <div id="remember-fields" class="hidden"><label class="field-label" for="vault-password">解锁密码</label><input type="password" id="vault-password" minlength="12" autocomplete="new-password" placeholder="至少 12 位，密码不会被保存"><p class="field-hint">密钥加密保存在本机；重新启动浏览器后需解锁。忘记密码时可清除后重新配置。</p></div>
+            <div id="unlock-fields" class="hidden"><label class="field-label" for="unlock-password">解锁已保存的密钥</label><div class="model-row"><input type="password" id="unlock-password" autocomplete="current-password" placeholder="输入解锁密码"><button type="button" id="btn-unlock" class="btn-reset">解锁</button></div></div>
+            <button type="button" id="btn-clear-key" class="text-button">清除密钥和加密副本</button>
+          </div>
           <div class="field">
-            <label class="field-label" for="api-base-url">API Base URL</label>
+            <label class="field-label" for="api-base-url">接口地址</label>
             <input type="text" id="api-base-url" placeholder="https://api.openai.com/v1" />
           </div>
 
           <div class="field">
             <label class="field-label" for="model">模型名称</label>
             <div class="model-row">
-              <input type="text" id="model" placeholder="gpt-3.5-turbo" />
+              <input type="text" id="model" placeholder="例如 qwen3.8-flash" aria-describedby="model-policy-hint" />
               <div class="model-presets">
                 <button class="preset-btn" data-model="gpt-5.4-nano">GPT-5.4 nano</button>
-                <button class="preset-btn" data-model="qwen3.5-flash">Qwen3.5 Flash</button>
+                <button class="preset-btn" data-model="qwen3.8-flash">Qwen3.8 Flash</button>
               </div>
             </div>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="thinking-mode">思考模式</label>
+            <select id="thinking-mode">
+              <option value="off">关闭（推荐）</option>
+              <option value="default">使用模型默认设置</option>
+            </select>
+            <div id="model-policy-hint" class="model-policy-hint" role="status" aria-live="polite"></div>
+            <div class="field-hint">根据模型和接口自动选择参数，翻译通常无需深度思考。</div>
           </div>
 
           <div class="field">
@@ -91,15 +113,7 @@
           翻译行为
         </div>
 
-        <div class="field">
-          <label class="field-label">快捷键</label>
-          <div class="shortcut-wrap">
-            <input type="text" id="shortcut-input" class="shortcut-input" readonly
-              placeholder="点击后按下快捷键组合…" autocomplete="off" />
-            <button id="shortcut-clear" class="shortcut-clear" title="恢复默认">重置</button>
-          </div>
-          <div class="field-hint">需包含 Ctrl / Alt / Shift 其中之一 + 字母或数字键</div>
-        </div>
+        <div class="field"><label class="field-label">快捷键</label><button type="button" id="btn-shortcuts" class="btn-reset">在 Chrome 中设置快捷键</button><div class="field-hint">默认 Alt+T，可在 Chrome 的扩展快捷键页面修改。</div></div>
 
         <div class="field">
           <label class="field-label" for="target-lang">目标语言</label>
@@ -157,24 +171,13 @@
           </div>
         </div>
 
-        <div class="field">
-          <div class="toggle-row">
-            <div>
-              <div class="toggle-label">自动翻译</div>
-              <div class="toggle-desc">打开外文页面时自动翻译</div>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="auto-translate" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-        </div>
+        <div class="field"><p class="field-hint">默认翻译屏幕附近的内容，滚动后继续。要自动翻译某个网站，请在扩展弹窗中选择“此网站始终翻译”。</p></div>
 
         <div class="field">
           <div class="toggle-row">
             <div>
-              <div class="toggle-label">翻译按钮 / 链接 / span</div>
-              <div class="toggle-desc">关闭时翻译正文段落（p/h*/li），通过链接密度自动过滤导航；开启后额外翻译 button、a、span、div 等（可能影响部分页面布局）</div>
+              <div class="toggle-label">翻译菜单和按钮</div>
+              <div class="toggle-desc">正文显示双语对照；开启后也翻译菜单和按钮。紧凑控件原位替换文字，移除翻译时恢复原文。</div>
             </div>
             <label class="toggle">
               <input type="checkbox" id="aggressive-mode" />
@@ -194,18 +197,23 @@
 
         <div id="advanced-content" class="hidden">
           <div class="field">
-            <label class="field-label" for="exclude-selectors">排除的 CSS 选择器</label>
-            <input type="text" id="exclude-selectors" placeholder=".no-translate, #header, nav" />
-            <div class="field-hint">多个选择器用英文逗号分隔，这些元素内的文字不会被翻译</div>
-          </div>
-          <div class="field">
-            <label class="field-label" for="include-selectors">额外翻译的 CSS 选择器</label>
-            <input type="text" id="include-selectors" placeholder="span.note, div.footnote, small" />
-            <div class="field-hint">补充翻译非标准元素，例如以 span/div 渲染的段落文字</div>
+            <label class="field-label" for="litellm-base-url">LiteLLM 控制台地址（可选）</label>
+            <input type="text" id="litellm-base-url" placeholder="https://your-gateway.example.com" />
+            <div class="field-hint">为此站点启用本地词典适配，保留控制台布局。</div>
           </div>
         </div>
       </section>
 
+      <section class="card"><div class="card-title">连接与数据</div>
+        <p id="destination" class="destination"></p>
+        <label class="consent"><input type="checkbox" id="service-consent"> 我同意将待译文字发送至以上服务，用于生成译文；使用 AI 接口可能产生服务商费用。</label>
+        <p class="field-hint">测试连接会先保存配置，再发送一段固定示例，不会读取网页。</p>
+        <button type="button" id="btn-test" class="btn-reset">保存并测试连接</button>
+        <p id="test-result" role="status" aria-live="polite"></p>
+        <button type="button" id="btn-clear-cache" class="text-button">清除临时译文缓存</button>
+        <a href="../privacy.html" target="_blank" rel="noopener">隐私说明</a>
+      </section>
+      <section class="card"><div class="card-title">网站偏好</div><div id="site-rules"></div></section>
       <div class="bottom-bar">
         <button id="btn-save" class="btn-save">保存设置</button>
         <button id="btn-reset" class="btn-reset">恢复默认</button>
@@ -214,6 +222,9 @@
   </div>
 
   <script src="../defaults.js"></script>
+  <script src="../model-policy.js"></script>
+  <script src="../config.js"></script>
+  <script src="../ui.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

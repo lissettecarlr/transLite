@@ -1,32 +1,28 @@
 {
   "manifest_version": 3,
   "name": "久远的翻译工具",
-  "version": "1.0.0",
-  "description": "轻量级双语对照翻译，支持 Google 免费翻译及 OpenAI 兼容接口",
-  "permissions": ["storage", "activeTab", "contextMenus"],
-  "host_permissions": ["<all_urls>"],
+  "version": "1.1.0",
+  "description": "轻量双语翻译，支持 Google 和自带密钥的 AI 接口；按需翻译，保留网页布局。",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "contextMenus"
+  ],
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["defaults.js", "content.js"],
-      "css": ["content.css"],
-      "run_at": "document_idle"
-    }
-  ],
   "icons": {
-    "16":  "images/1.png",
-    "48":  "images/1.png",
+    "16": "images/1.png",
+    "48": "images/1.png",
     "128": "images/1.png"
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "轻量翻译",
+    "default_title": "久远的翻译工具",
     "default_icon": {
-      "16":  "images/1.png",
-      "48":  "images/1.png",
+      "16": "images/1.png",
+      "48": "images/1.png",
       "128": "images/1.png"
     }
   },
@@ -39,5 +35,10 @@
       },
       "description": "开启/关闭页面翻译"
     }
-  }
+  },
+  "minimum_chrome_version": "120",
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
 }

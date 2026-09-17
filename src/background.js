@@ -1,298 +1,235 @@
-// Service Worker - 处理翻译 API 请求
+importScripts('defaults.js', 'config.js', 'vault.js', 'model-policy.js', 'translation.js');
 
-// ---- 动态图标 ----
-function drawIcon(size, isActive) {
-  const canvas = new OffscreenCanvas(size, size);
-  const ctx = canvas.getContext('2d');
-  const r = size * 0.12;
-
-  ctx.beginPath();
-  ctx.moveTo(r, 0);
-  ctx.lineTo(size - r, 0);
-  ctx.quadraticCurveTo(size, 0, size, r);
-  ctx.lineTo(size, size - r);
-  ctx.quadraticCurveTo(size, size, size - r, size);
-  ctx.lineTo(r, size);
-  ctx.quadraticCurveTo(0, size, 0, size - r);
-  ctx.lineTo(0, r);
-  ctx.quadraticCurveTo(0, 0, r, 0);
-  ctx.closePath();
-
-  const grad = ctx.createLinearGradient(0, 0, size, size);
-  if (isActive) {
-    grad.addColorStop(0, '#1a73e8');
-    grad.addColorStop(1, '#0d47a1');
-  } else {
-    grad.addColorStop(0, '#5f6368');
-    grad.addColorStop(1, '#3c4043');
-  }
-  ctx.fillStyle = grad;
-  ctx.fill();
-
-  ctx.fillStyle = 'white';
-  ctx.font = `bold ${size * 0.55}px "PingFang SC", "Microsoft YaHei", sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('译', size / 2, size * 0.54);
-
-  return ctx.getImageData(0, 0, size, size);
+const ready = Promise.all(['local', 'sync', 'session'].map(area => chrome.storage[area].setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'})));
+const jobs = new Map(), injections = new Map();
+const files = ['defaults.js','adapters/litellm.js','adapters/linear.js','dom.js','content.js'];
+let writes = Promise.resolve();
+function serialize(action) { const next = writes.then(action); writes = next.catch(() => {}); return next; }
+async function preferences() {
+  await ready;
+  return LT_CONFIG.sanitize((await chrome.storage.local.get('preferences')).preferences);
 }
-
-async function setIcon(isActive = false) {
-  const size = 128;
-  try {
-    const url = chrome.runtime.getURL('images/1.png');
-    const canvas = new OffscreenCanvas(size, size);
-    const ctx = canvas.getContext('2d');
-
-    const blob = await fetch(url).then((r) => r.blob());
-    const bmp = await createImageBitmap(blob, { resizeWidth: size, resizeHeight: size });
-    ctx.drawImage(bmp, 0, 0, size, size);
-
-    if (isActive) {
-      // 右下角蓝色圆点表示翻译已开启
-      ctx.fillStyle = '#1a73e8';
-      ctx.beginPath();
-      ctx.arc(size - 18, size - 18, 14, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 16px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('✓', size - 18, size - 17);
-    }
-
-    await chrome.action.setIcon({ imageData: ctx.getImageData(0, 0, size, size) });
-  } catch (_) {
-    // 图片加载失败时回退到文字图标
+async function pageSettings(url) {
+  const settings = await preferences(), {siteRules = {}} = await chrome.storage.local.get('siteRules');
+  return {...LT_CONFIG.publicSettings(settings), siteRule:siteRules[new URL(url).origin] || 'manual'};
+}
+function trusted(sender) {
+  return sender.id === chrome.runtime.id && [chrome.runtime.getURL('options/options.html'), chrome.runtime.getURL('popup/popup.html')].includes(sender.url?.split('?')[0]);
+}
+function pageSender(sender) { return sender.tab?.id != null && sender.frameId === 0 && /^https?:\/\//.test(sender.url || ''); }
+function jobKey(sender, taskId) {
+  if (!pageSender(sender) || typeof taskId !== 'string' || !/^[\w-]{1,100}$/.test(taskId)) throw new Error('翻译任务无效');
+  return `${sender.tab.id}:${sender.documentId || ''}:${taskId}`;
+}
+function cancelJobs(tabId) {
+  for (const [key, job] of jobs) if (tabId == null || job.tabId === tabId) { job.controller.abort(); jobs.delete(key); }
+}
+async function credentials(settings) {
+  const {credential} = await chrome.storage.session.get('credential');
+  if (!credential || credential.endpoint !== settings.apiBaseUrl) throw new Error('请在设置中输入或解锁此接口的 API Key');
+  return credential.apiKey;
+}
+async function assertRemoteAllowed(settings) {
+  const {consents = {}} = await chrome.storage.local.get('consents');
+  if (!consents[LT_CONFIG.consentKey(settings)]) throw new Error('请先在扩展弹窗中确认文字发送到所选翻译服务');
+  if (!await chrome.permissions.contains({origins:[LT_CONFIG.originPattern(LT_CONFIG.destination(settings))]})) throw new Error('请在扩展弹窗或设置中授权访问翻译服务');
+}
+async function configForRequest(settings) {
+  await assertRemoteAllowed(settings);
+  return {...settings, ...(settings.service === 'openai' ? {apiKey:await credentials(settings)} : {})};
+}
+async function settingsView() {
+  const settings = await preferences();
+  const [{vault, siteRules = {}, consents = {}}, {credential}] = await Promise.all([
+    chrome.storage.local.get(['vault','siteRules','consents']), chrome.storage.session.get('credential'),
+  ]);
+  return {settings, siteRules, hasKey:!!credential && credential.endpoint === settings.apiBaseUrl,
+    hasVault:!!vault && vault.endpoint === settings.apiBaseUrl, destination:LT_CONFIG.destination(settings), consent:!!consents[LT_CONFIG.consentKey(settings)]};
+}
+async function saveSettings(message) {
+  const settings = LT_CONFIG.sanitize(message.settings);
+  if (message.apiKey != null && typeof message.apiKey !== 'string') throw new Error('API Key 格式无效');
+  const apiKey = message.apiKey?.trim();
+  if (apiKey && (apiKey.length > 2000 || /\s/.test(apiKey))) throw new Error('API Key 格式无效');
+  if (settings.service === 'openai' && !await chrome.permissions.contains({origins:[LT_CONFIG.originPattern(settings.apiBaseUrl)]})) throw new Error('请先授权访问所选接口');
+  let vault;
+  if (message.rememberKey) {
+    if (!apiKey) throw new Error('请填写要加密保存的 API Key');
+    vault = await LT_VAULT.seal(apiKey, message.password, settings.apiBaseUrl);
+  }
+  cancelJobs(); translationCache.clear(); inFlightTranslations.clear();
+  const previous = await preferences();
+  if (previous.apiBaseUrl !== settings.apiBaseUrl || apiKey) {
+    await chrome.storage.session.remove('credential'); await chrome.storage.local.remove('vault');
+  }
+  if (apiKey) await chrome.storage.session.set({credential:{apiKey, endpoint:settings.apiBaseUrl}});
+  if (vault) await chrome.storage.local.set({vault});
+  await chrome.storage.local.set({preferences:settings});
+  if (message.consent === true) {
+    const {consents = {}} = await chrome.storage.local.get('consents');
+    consents[LT_CONFIG.consentKey(settings)] = true; await chrome.storage.local.set({consents});
+  }
+  await broadcastSettings();
+  return settingsView();
+}
+async function broadcastSettings() {
+  await Promise.all((await chrome.tabs.query({})).map(async tab => {
+    if (!/^https?:\/\//.test(tab.url || '')) return;
+    await chrome.tabs.sendMessage(tab.id, {type:'SETTINGS_UPDATED', settings:await pageSettings(tab.url)}).catch(() => {});
+  }));
+}
+async function ensurePage(tabId) {
+  if (injections.has(tabId)) return injections.get(tabId);
+  const promise = (async () => {
+    const tab = await chrome.tabs.get(tabId);
+    if (!/^https?:\/\//.test(tab.url || '') || /^https:\/\/(chromewebstore.google.com|chrome.google.com\/webstore)/.test(tab.url)) throw new Error('当前页面不支持翻译，请打开普通网页');
+    try { if ((await chrome.tabs.sendMessage(tabId, {type:'PING'}))?.ok) return; } catch {}
     try {
-      chrome.action.setIcon({ imageData: drawIcon(size, isActive) });
-    } catch (_) {}
+      await chrome.scripting.insertCSS({target:{tabId}, files:['content.css']});
+      await chrome.scripting.executeScript({target:{tabId}, files});
+      await chrome.tabs.sendMessage(tabId, {type:'PING'});
+    } catch { throw new Error('无法访问此页面，请刷新网页后重新点击扩展'); }
+  })();
+  injections.set(tabId, promise);
+  try { await promise; } finally { injections.delete(tabId); }
+}
+async function syncSiteScripts() {
+  const {siteRules = {}} = await chrome.storage.local.get('siteRules');
+  const matches = [...new Set(Object.entries(siteRules).filter(([,rule]) => rule === 'always').map(([origin]) => LT_CONFIG.originPattern(origin)))];
+  const allowed = [];
+  for (const match of matches) if (await chrome.permissions.contains({origins:[match]})) allowed.push(match);
+  const registered = await chrome.scripting.getRegisteredContentScripts({ids:['lt-auto']});
+  if (!allowed.length) { if (registered.length) await chrome.scripting.unregisterContentScripts({ids:['lt-auto']}); return; }
+  const script = {id:'lt-auto', matches:allowed, js:files, css:['content.css'], runAt:'document_idle', persistAcrossSessions:true};
+  if (registered.length) await chrome.scripting.updateContentScripts([script]); else await chrome.scripting.registerContentScripts([script]);
+}
+async function setSiteRule(tabId, rule) {
+  if (!['manual','always','never'].includes(rule)) throw new Error('网站选项无效');
+  const tab = await chrome.tabs.get(tabId), origin = new URL(tab.url).origin, pattern = LT_CONFIG.originPattern(tab.url);
+  if (rule === 'always') {
+    if (!await chrome.permissions.contains({origins:[pattern]})) throw new Error('自动翻译需要此网站的访问权限');
+    await configForRequest(await preferences());
   }
+  const {siteRules = {}} = await chrome.storage.local.get('siteRules');
+  if (rule === 'manual') delete siteRules[origin]; else siteRules[origin] = rule;
+  await chrome.storage.local.set({siteRules}); await syncSiteScripts();
+  for (const item of await chrome.tabs.query({url:pattern})) {
+    if (new URL(item.url).origin !== origin) continue;
+    if (rule !== 'always') cancelJobs(item.id);
+    await chrome.tabs.sendMessage(item.id, {type:'SITE_RULE_UPDATED', rule}).catch(() => {});
+  }
+  return {rule};
 }
 
-// ---- 初始化 ----
-chrome.runtime.onInstalled.addListener(() => {
-  setIcon(false);
-  chrome.contextMenus.create({
-    id: 'lt-translate-selection',
-    title: '翻译选中文字',
-    contexts: ['selection'],
-  });
-});
-
-chrome.runtime.onStartup.addListener(() => setIcon(false));
-
-// ---- 快捷键 ----
-chrome.commands.onCommand.addListener((command) => {
-  if (command === 'toggle-translation') {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, { type: 'TOGGLE_TRANSLATION' }).catch(() => {});
-      }
-    });
-  }
-});
-
-// ---- 右键菜单 ----
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === 'lt-translate-selection' && info.selectionText && tab?.id) {
-    chrome.tabs.sendMessage(tab.id, {
-      type: 'TRANSLATE_SELECTION',
-      text: info.selectionText,
-    }).catch(() => {});
-  }
-});
-
-// ---- 消息处理 ----
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // content script 发来的状态同步：必须 sendResponse，否则 Promise 会 reject / 控制台报 lastError
-  // 状态用 session 写给 popup 读，避免 runtime.sendMessage 多 listener 抢答 sendResponse
-  if (message.type === 'STATUS_UPDATE') {
-    sendResponse({ ok: true });
-    const tabId = sender.tab?.id;
-    if (tabId != null && message.data) {
-      chrome.storage.session
-        .set({ [`ltStatus_${tabId}`]: message.data })
-        .catch(() => {});
-    }
-    return false;
-  }
-
-  if (message.type === 'TRANSLATE') {
-    handleTranslation(message.texts, message.settings)
-      .then(sendResponse)
-      .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
-
-  if (message.type === 'SET_ICON') {
-    setIcon(message.active);
-    sendResponse({ ok: true });
-    return false;
-  }
-});
-
-// ---- 翻译入口 ----
-async function handleTranslation(texts, settings = {}) {
-  const { service = 'google', targetLang = 'zh-CN' } = settings;
-
-  if (!texts || texts.length === 0) {
-    return { success: true, translations: [] };
-  }
-
-  // 每 20s 做一次无害的 API 调用，防止 MV3 Service Worker 在长批次翻译期间被 Chrome 休眠
-  const keepAlive = setInterval(() => {
-    chrome.storage.session?.get?.('_ka').catch?.(() => {});
-  }, 20_000);
-
-  try {
-    if (service === 'openai') {
-      return await translateWithOpenAI(texts, settings);
-    }
-    return await translateWithGoogle(texts, targetLang);
-  } finally {
-    clearInterval(keepAlive);
-  }
-}
-
-// ---- Google 免费翻译（并发 + 分隔符降级）----
-async function translateWithGoogle(texts, targetLang) {
-  const BATCH = 10;
-  const CONCURRENCY = 3;
-  const results = new Array(texts.length).fill('');
-
-  const batches = [];
-  for (let i = 0; i < texts.length; i += BATCH) {
-    batches.push({ start: i, chunk: texts.slice(i, i + BATCH) });
-  }
-
-  for (let i = 0; i < batches.length; i += CONCURRENCY) {
-    const group = batches.slice(i, i + CONCURRENCY);
-    const responses = await Promise.all(
-      group.map((b) => fetchGoogleBatch(b.chunk, targetLang))
-    );
-    group.forEach((b, idx) => {
-      responses[idx].forEach((t, j) => {
-        results[b.start + j] = t;
+async function dispatch(message, sender) {
+  await ready;
+  if (!message || typeof message.type !== 'string') throw new Error('消息格式无效');
+  if (trusted(sender)) {
+    switch (message.type) {
+      case 'GET_SETTINGS': return settingsView();
+      case 'SAVE_SETTINGS': return serialize(() => saveSettings(message));
+      case 'UNLOCK_KEY': return serialize(async () => {
+        const settings = await preferences(), {vault} = await chrome.storage.local.get('vault');
+        if (vault?.endpoint !== settings.apiBaseUrl) throw new Error('此接口没有已保存的密钥');
+        const apiKey = await LT_VAULT.open(vault, message.password);
+        await chrome.storage.session.set({credential:{apiKey, endpoint:settings.apiBaseUrl}}); return settingsView();
       });
-    });
-
-    if (i + CONCURRENCY < batches.length) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-
-  return { success: true, translations: results };
-}
-
-async function fetchGoogleBatch(chunk, targetLang) {
-  const SEP = '\n\n⟦LT⟧\n\n';
-  const joined = chunk.join(SEP);
-  const url =
-    `https://translate.googleapis.com/translate_a/single` +
-    `?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t` +
-    `&q=${encodeURIComponent(joined)}`;
-
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Google 翻译请求失败: HTTP ${res.status}`);
-
-  const data = await res.json();
-  const full = data[0].map((item) => item[0]).join('');
-  const parts = full.split(/\s*⟦\s*LT\s*⟧\s*/);
-
-  // 分隔符被翻译引擎破坏时，降级为逐条翻译
-  if (parts.length !== chunk.length) {
-    return Promise.all(chunk.map((text) => fetchGoogleSingle(text, targetLang)));
-  }
-
-  return parts.map((p) => p.trim());
-}
-
-async function fetchGoogleSingle(text, targetLang) {
-  const url =
-    `https://translate.googleapis.com/translate_a/single` +
-    `?client=gtx&sl=auto&tl=${encodeURIComponent(targetLang)}&dt=t` +
-    `&q=${encodeURIComponent(text)}`;
-
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Google 翻译请求失败: HTTP ${res.status}`);
-
-  const data = await res.json();
-  return data[0].map((item) => item[0]).join('').trim();
-}
-
-// ---- OpenAI 兼容翻译 ----
-async function translateWithOpenAI(texts, settings) {
-  const {
-    apiKey,
-    apiBaseUrl = 'https://api.openai.com/v1',
-    model = 'gpt-5.4-nano',
-    targetLang = 'zh-CN',
-    systemPrompt = '',
-  } = settings;
-
-  if (!apiKey) throw new Error('请先在设置中填写 API Key');
-
-  const LANG_MAP = {
-    'zh-CN': '简体中文', 'zh-TW': '繁体中文',
-    en: '英文', ja: '日文', ko: '韩文',
-    fr: '法文', de: '德文', es: '西班牙文',
-    ru: '俄文', ar: '阿拉伯文', pt: '葡萄牙文',
-    it: '意大利文', vi: '越南文', th: '泰文',
-  };
-  const langName = LANG_MAP[targetLang] || targetLang;
-
-  const defaultSystem = `你是专业翻译助手。将用户发送的 JSON 字符串数组翻译成${langName}，以相同长度的 JSON 字符串数组格式返回，不要解释，不要多余文字。翻译规则：1）保持原文语气和格式；2）专有名词、品牌名、人名、产品名、技术术语（如 token、API、GitHub、React 等）保留英文原文不翻译；3）代码、变量名、命令不翻译；4）若整段文字本身已是目标语言，原样返回。`;
-
-  const BATCH = 10;
-  const results = [];
-
-  for (let i = 0; i < texts.length; i += BATCH) {
-    const chunk = texts.slice(i, i + BATCH);
-
-    const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt || defaultSystem },
-          { role: 'user', content: JSON.stringify(chunk) },
-        ],
-        temperature: 0.1,
-      }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      throw new Error(`API 错误 ${res.status}: ${errText.slice(0, 200)}`);
-    }
-
-    const data = await res.json();
-    const raw = data.choices?.[0]?.message?.content || '[]';
-
-    let parsed;
-    try {
-      // 有时模型返回带 markdown 代码块
-      const cleaned = raw.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '').trim();
-      parsed = JSON.parse(cleaned);
-      if (!Array.isArray(parsed)) {
-        // 尝试取对象的第一个数组值
-        parsed = Object.values(parsed).find(Array.isArray) || [];
+      case 'CLEAR_KEY': return serialize(async () => {
+        cancelJobs(); translationCache.clear(); inFlightTranslations.clear();
+        await chrome.storage.session.remove('credential'); await chrome.storage.local.remove('vault'); return settingsView();
+      });
+      case 'CLEAR_CACHE': translationCache.clear(); return {};
+      case 'TEST_CONNECTION': {
+        const settings = await configForRequest(await preferences()), start = Date.now(), controller = new AbortController(), key = `test:${crypto.randomUUID()}`;
+        jobs.set(key, {controller, tabId:sender.tab?.id, time:Date.now()});
+        try {
+          const translations = settings.service === 'openai'
+            ? await translateWithOpenAI(['Hello, welcome to this page.'], settings, {signal:controller.signal})
+            : await fetchGoogleBatch(['Hello, welcome to this page.'], settings.targetLang, {signal:controller.signal});
+          return {elapsed:Date.now()-start, translation:translations[0], destination:LT_CONFIG.destination(settings), policy:settings.service === 'openai' ? LT_MODEL_POLICY.describe(settings) : ''};
+        } finally { jobs.delete(key); }
       }
-    } catch {
-      // fallback: 按换行分割
-      parsed = raw.split('\n').filter(Boolean);
-    }
-
-    for (let j = 0; j < chunk.length; j++) {
-      results.push(parsed[j] ?? '');
+      case 'CONFIRM_SERVICE': return serialize(async () => {
+        const settings = await preferences();
+        if (message.destination !== LT_CONFIG.destination(settings)) throw new Error('翻译服务已变化，请重新确认');
+        const {consents = {}} = await chrome.storage.local.get('consents'); consents[LT_CONFIG.consentKey(settings)] = true;
+        await chrome.storage.local.set({consents}); return {};
+      });
+      case 'SET_TARGET': return serialize(async () => {
+        const settings = LT_CONFIG.sanitize({...await preferences(), targetLang:message.targetLang});
+        cancelJobs(); await chrome.storage.local.set({preferences:settings}); await broadcastSettings(); return {};
+      });
+      case 'SET_SITE_RULE': return serialize(() => setSiteRule(message.tabId, message.rule));
+      case 'REMOVE_SITE_RULE': return serialize(async () => {
+        const {siteRules = {}} = await chrome.storage.local.get('siteRules'); delete siteRules[message.origin];
+        await chrome.storage.local.set({siteRules}); await syncSiteScripts(); await broadcastSettings(); return settingsView();
+      });
+      case 'PAGE_COMMAND': {
+        if (!['GET_STATUS','START_TRANSLATION','STOP_TRANSLATION','REMOVE_TRANSLATION'].includes(message.command)) throw new Error('页面操作无效');
+        if (message.command === 'START_TRANSLATION') await configForRequest(await preferences());
+        await ensurePage(message.tabId); return chrome.tabs.sendMessage(message.tabId, {type:message.command});
+      }
+      default: throw new Error('未知操作');
     }
   }
-
-  return { success: true, translations: results };
+  if (!pageSender(sender)) throw new Error('此页面无权执行该操作');
+  switch (message.type) {
+    case 'GET_PAGE_SETTINGS': return {settings:await pageSettings(sender.url)};
+    case 'BEGIN_TASK': {
+      const key = jobKey(sender, message.taskId), settings = await configForRequest(await preferences());
+      for (const [id, job] of jobs) if (Date.now()-job.time > 120000) {job.controller.abort(); jobs.delete(id);}
+      if ([...jobs.values()].filter(job => job.tabId === sender.tab.id).length >= 4 || jobs.size >= 40) throw new Error('翻译任务较多，请稍后重试');
+      if (jobs.has(key)) jobs.get(key).controller.abort();
+      jobs.set(key, {controller:new AbortController(), tabId:sender.tab.id, settings, time:Date.now()}); return {};
+    }
+    case 'TRANSLATE': {
+      const key = jobKey(sender, message.taskId), job = jobs.get(key);
+      if (!job) throw new Error('翻译任务已结束，请重新点击翻译'); job.time = Date.now();
+      return handleTranslation(message.texts, job.settings, {scope:key, signal:job.controller.signal});
+    }
+    case 'CANCEL_TASK': case 'END_TASK': {
+      const key = jobKey(sender, message.taskId), job = jobs.get(key);
+      // A failed batch can return while sibling HTTP chunks are still queued.
+      // Finishing a task must release those too, not just remove its registry entry.
+      job?.controller.abort(); jobs.delete(key); return {};
+    }
+    case 'STATUS_UPDATE': {
+      const data = message.data || {};
+      const status = {phase:['idle','translating','watching','partial','error','stopped'].includes(data.phase) ? data.phase : 'idle', count:Math.max(0, Math.min(100000, Number(data.count)||0)), isTranslating:!!data.isTranslating, isTranslated:!!data.isTranslated, error:typeof data.error === 'string' ? data.error.slice(0,200) : ''};
+      await chrome.storage.session.set({[`ltStatus_${sender.tab.id}`]:status});
+      await chrome.action.setTitle({tabId:sender.tab.id, title:'久远的翻译工具'});
+      await chrome.action.setBadgeText({tabId:sender.tab.id, text:status.phase === 'translating' ? '…' : ['partial','error'].includes(status.phase) ? '!' : status.isTranslated ? '✓' : ''}); return {};
+    }
+    default: throw new Error('此页面无权执行该操作');
+  }
 }
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  dispatch(message, sender).then(result => respond({success:true, ...result}), error => respond({success:false, error:error.name === 'AbortError' ? '翻译已停止' : error.message || '操作失败'})); return true;
+});
+async function shortcut(tab, selection) {
+  if (!tab?.id) return;
+  try {
+    await configForRequest(await preferences()); await ensurePage(tab.id);
+    await chrome.tabs.sendMessage(tab.id, selection ? {type:'TRANSLATE_SELECTION', text:selection} : {type:'TOGGLE_TRANSLATION'});
+  } catch {
+    await chrome.action.setBadgeText({tabId:tab.id, text:'!'});
+    await chrome.action.setTitle({tabId:tab.id, title:'请打开扩展弹窗，确认服务授权或配置'});
+    await chrome.action.openPopup().catch(() => chrome.runtime.openOptionsPage());
+  }
+}
+chrome.commands.onCommand.addListener(async command => { if (command === 'toggle-translation') await shortcut((await chrome.tabs.query({active:true,currentWindow:true}))[0]); });
+chrome.contextMenus.onClicked.addListener((info, tab) => { if (info.menuItemId === 'lt-translate-selection' && info.selectionText) void shortcut(tab, info.selectionText); });
+chrome.runtime.onInstalled.addListener(async () => {
+  await ready; await chrome.contextMenus.removeAll();
+  chrome.contextMenus.create({id:'lt-translate-selection', title:'翻译选中文字', contexts:['selection'], documentUrlPatterns:['http://*/*','https://*/*']}); await syncSiteScripts();
+});
+chrome.runtime.onStartup.addListener(() => {void ready.then(syncSiteScripts);});
+chrome.permissions.onRemoved.addListener(() => {cancelJobs(); void syncSiteScripts();});
+chrome.tabs.onRemoved.addListener(tabId => {cancelJobs(tabId); void chrome.storage.session.remove(`ltStatus_${tabId}`);});
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === 'loading') {
+    cancelJobs(tabId); void chrome.storage.session.remove(`ltStatus_${tabId}`);
+    void chrome.action.setBadgeText({tabId, text:''}).catch(() => {});
+    void chrome.action.setTitle({tabId, title:'久远的翻译工具'}).catch(() => {});
+  }
+});

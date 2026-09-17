@@ -1,17 +1,15 @@
 /* eslint-disable no-unused-vars */
-const LT_DEFAULTS = {
+var LT_DEFAULTS = {
   service: 'google',
-  apiKey: '',
-  apiBaseUrl: 'https://api.openai.com/v1',
-  model: 'gpt-5.4-nano',
+  provider: 'qwen',
+  apiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  litellmBaseUrl: '',
+  model: 'qwen3.8-flash',
+  thinkingMode: 'off',
   targetLang: 'zh-CN',
-  autoTranslate: false,
   aggressiveMode: false,
-  shortcut: 'Alt+T',
   theme: 'underline',
   translationColorMode: 'inherit',
   translationColor: '#1a73e8',
   systemPrompt: '',
-  excludeSelectors: '',
-  includeSelectors: '',
 };

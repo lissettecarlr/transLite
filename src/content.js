@@ -1,11 +1,12 @@
+(() => {
+if (globalThis.__LT_INSTALLED) return;
+globalThis.__LT_INSTALLED = true;
 // Content Script - 核心翻译逻辑
 
 const LT = {
-  PREFIX: 'lt',
   RESULT_CLASS: 'lt-result',
   DONE_ATTR: 'data-lt-done',
   PENDING_ATTR: 'data-lt-pending',
-  WRAP_CLASS: 'lt-wrap',
   POPUP_ID: 'lt-selection-popup',
 };
 
@@ -22,20 +23,54 @@ const TRANSLATE_SELECTORS_AGGRESSIVE = [
   'button', 'a', 'label', 'span', 'div',
 ];
 
+function getSiteAdapter() {
+  if (state.settings?.targetLang && !['zh', 'zh-CN'].includes(state.settings.targetLang)) return null;
+  const adapters = globalThis.LT_SITE_ADAPTERS || {};
+  const currentUrl = new URL(location.href);
+  return Object.values(adapters).find((adapter) => {
+    try {
+      return adapter.matches(currentUrl, document, state.settings);
+    } catch (_) {
+      return false;
+    }
+  }) || null;
+}
+
 function getTranslateSelectors() {
   const aggressive = !!state.settings?.aggressiveMode;
+  const adapter = getSiteAdapter();
   const base = aggressive
     ? [...TRANSLATE_SELECTORS_BASE, ...TRANSLATE_SELECTORS_AGGRESSIVE]
     : [...TRANSLATE_SELECTORS_BASE];
 
-  const custom = state.settings?.includeSelectors?.trim();
-  if (custom) {
-    custom.split(',').map((s) => s.trim()).filter(Boolean).forEach((s) => {
-      if (!base.includes(s)) base.push(s);
+  if (adapter?.selectors) {
+    adapter.selectors.forEach((selector) => {
+      if (!base.includes(selector)) base.push(selector);
     });
   }
 
+  const custom = validCustomSelector(state.settings?.includeSelectors);
+  if (custom) {
+    base.push(custom);
+  }
+
   return base.join(',');
+}
+
+const selectorValidity = new Map();
+function validCustomSelector(value) {
+  const selector = value?.trim();
+  if (!selector) return '';
+  if (selectorValidity.has(selector)) return selectorValidity.get(selector) ? selector : '';
+  try {
+    document.querySelectorAll(selector);
+    if (selectorValidity.size >= 20) selectorValidity.clear();
+    selectorValidity.set(selector, true);
+    return selector;
+  } catch (_) {
+    selectorValidity.set(selector, false);
+    return '';
+  }
 }
 
 /**
@@ -43,6 +78,8 @@ function getTranslateSelectors() {
  * tabindex>=0、或 cursor:pointer。满足任一条件则跳过翻译，避免破坏按钮/链接布局。
  */
 function isClickable(el) {
+  if (getSiteAdapter()?.allowInteractiveUi) return false;
+
   const tag = el.tagName.toLowerCase();
   if (['button', 'a', 'select', 'textarea', 'input'].includes(tag)) return true;
   if (el.hasAttribute('href') || el.hasAttribute('onclick')) return true;
@@ -76,6 +113,7 @@ function isClickable(el) {
  */
 function shouldSkipNonAggressiveUiChrome(el) {
   if (state.settings?.aggressiveMode) return false;
+  if (getSiteAdapter()?.allowInteractiveUi) return false;
 
   if (el.closest('nav, [role="navigation"]')) return true;
 
@@ -105,13 +143,29 @@ const EXCLUDE_PARENTS = [
   'script', 'style', 'noscript', 'iframe',
   'code', 'pre', 'kbd', 'samp', 'var', 'math', 'svg',
   '.lt-result', '[data-lt-done]',
+  '[contenteditable]:not([contenteditable="false"])', 'input', 'textarea', 'select',
+  '[translate="no"]', '.notranslate', '[hidden]', '[aria-hidden="true"]',
+  '#lt-selection-popup', '#lt-error-toast',
 ].join(',');
 
 let state = {
+  phase: 'idle',
+  error: '',
+  taskId: null,
+  pendingUnits: new Map(),
+  dirtyRoots: new Set(),
   isTranslating: false,
   isTranslated: false,
   translatedCount: 0,
+  rescanRequested: false,
+  enabled: false,
+  generation: 0,
+  outputUnits: new Set(),
+  completedNodes: new Set(),
+  queuedUnits: new Set(),
   settings: null,
+  translatedAttributes: new Map(),
+  replacedTextNodes: new Map(),
 };
 
 function isRuntimeAvailable() {
@@ -142,51 +196,97 @@ function sendRuntimeMessageSafe(message, callback) {
 // ---- 初始化 ----
 async function init() {
   state.settings = await loadSettings();
-  setupMessageListener();
-  setupKeyboardShortcut();
   setupMutationObserver();
-
-  if (state.settings.autoTranslate && shouldAutoTranslate()) {
-    setTimeout(() => startTranslation(), 1500);
-  }
+  window.addEventListener('scroll', scheduleRescan, {passive:true, capture:true});
+  window.addEventListener('resize', scheduleRescan, {passive:true});
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRescan(); });
+  window.addEventListener('pagehide', stopTranslation);
+  if (state.settings.siteRule === 'always' && shouldAutoTranslate()) autoStartTimer = setTimeout(() => void startTranslation(), 300);
 }
 
-// ---- MutationObserver：处理 SPA 动态插入/更新的内容 ----
+// ---- Dynamic pages: ignore our own writes; invalidate only changed content. ----
+let rescanTimer = null;
+let autoStartTimer = null;
+function scheduleRescan() {
+  if (!state.enabled || document.hidden) return;
+  if (state.isTranslating) { state.rescanRequested = true; return; }
+  clearTimeout(rescanTimer);
+  rescanTimer = setTimeout(() => {
+    if (state.enabled) void startTranslation();
+  }, getSiteAdapter()?.mutationDebounceMs ?? 120);
+}
+
+function isExtensionNode(node) {
+  const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  return !!el?.closest?.(`.${LT.RESULT_CLASS}, #${LT.POPUP_ID}, #lt-error-toast`);
+}
+
+function hasExternalMutation(mutation) {
+  if (isExtensionNode(mutation.target)) return false;
+  if (mutation.type === 'characterData') {
+    const tracked = state.replacedTextNodes.get(mutation.target);
+    return !tracked || mutation.target.nodeValue !== tracked.translated;
+  }
+  if (mutation.type === 'attributes') {
+    const tracked = state.translatedAttributes.get(mutation.target)?.[mutation.attributeName];
+    return !tracked || mutation.target.getAttribute(mutation.attributeName) !== tracked.translated;
+  }
+  return [...(mutation.addedNodes || []), ...(mutation.removedNodes || [])].some(node =>
+    !isExtensionNode(node) && (node.nodeType === Node.ELEMENT_NODE || !!node.textContent?.trim()));
+}
+
+let observer;
 function setupMutationObserver() {
-  let debounceTimer = null;
-
-  const observer = new MutationObserver((mutations) => {
-    if (!state.isTranslated || state.isTranslating) return;
-
-    let shouldRetranslate = false;
-
-    for (const m of mutations) {
-      if (m.type === 'characterData') {
-        const parent = m.target.parentElement;
-        if (parent?.hasAttribute(LT.DONE_ATTR)) {
-          parent.querySelector(`.${LT.RESULT_CLASS}`)?.remove();
-          parent.removeAttribute(LT.DONE_ATTR);
-          state.translatedCount = Math.max(0, state.translatedCount - 1);
-          shouldRetranslate = true;
-        }
-      } else if (m.type === 'childList') {
-        const hasRealNodes = [...m.addedNodes].some(
-          (n) => n.nodeType === 1 && !n.classList?.contains(LT.RESULT_CLASS)
-        );
-        if (hasRealNodes) shouldRetranslate = true;
-      }
+  observer = new MutationObserver(mutations => {
+    if (!state.enabled) return;
+    const external = mutations.filter(hasExternalMutation);
+    if (!external.length) return;
+    for (const mutation of external) {
+      const target = mutation.target?.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target?.parentElement;
+      if (!target) continue;
+      if (target === document.body) {
+        for (const node of mutation.addedNodes || []) if (node.nodeType === Node.ELEMENT_NODE) state.dirtyRoots.add(node);
+        if ([...(mutation.addedNodes || [])].some(node => node.nodeType === Node.TEXT_NODE)) state.dirtyRoots.add(target);
+      } else state.dirtyRoots.add(LT_DOM.scanRoot(target));
     }
-
-    if (!shouldRetranslate) return;
-
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => startTranslation(), 800);
+    for (const unit of state.queuedUnits) {
+      if (external.some(m => {
+        const target = m.target?.nodeType === Node.ELEMENT_NODE ? m.target : m.target?.parentElement;
+        return target && (unit.el.contains?.(target) || target.contains?.(unit.el));
+      })) unit.invalidated = true;
+    }
+    for (const unit of state.outputUnits) {
+      const affected = (unit.span && !unit.span.isConnected) || !LT_DOM.isCurrent(unit) || external.some(m => {
+        const target = m.target?.nodeType === Node.ELEMENT_NODE ? m.target : m.target?.parentElement;
+        return target && unit.el.contains(target);
+      });
+      if (!affected) continue;
+      if (unit.el.isConnected) state.dirtyRoots.add(unit.el);
+      unit.span?.remove();
+      unit.sources.forEach(source => state.completedNodes.delete(source.node));
+      state.outputUnits.delete(unit);
+      state.translatedCount = Math.max(0, state.translatedCount - 1);
+    }
+    state.replacedTextNodes.forEach((record, node) => {
+      if (node.isConnected && node.nodeValue === record.translated) return;
+      state.replacedTextNodes.delete(node);
+      state.completedNodes.delete(node);
+      node.parentElement?.closest?.(`[${LT.DONE_ATTR}]`)?.removeAttribute(LT.DONE_ATTR);
+      state.translatedCount = Math.max(0, state.translatedCount - 1);
+    });
+    // Adapter markers belong to elements; frameworks can replace their text
+    // children without replacing those elements.
+    for (const mutation of external) {
+      const el = mutation.target?.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target?.parentElement;
+      el?.closest?.(`[${LT.DONE_ATTR}]`)?.removeAttribute(LT.DONE_ATTR);
+    }
+    scheduleRescan();
   });
-
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-    characterData: true,  // 监听文本节点原地更新（React reconciliation 复用节点时）
+}
+function observePage() {
+  if (document.body) observer.observe(document.body, {
+    childList: true, subtree: true, characterData: true,
+    attributes: true, attributeFilter: ['title','aria-label','placeholder','hidden','aria-hidden','translate','contenteditable'],
   });
 }
 
@@ -208,9 +308,18 @@ function shouldAutoTranslate() {
 function setupMessageListener() {
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.type) {
+      case 'PING':
+        initialization.then(() => sendResponse({ok:true}), () => sendResponse({ok:false}));
+        return true;
+      case 'SITE_RULE_UPDATED':
+        state.settings.siteRule = msg.rule;
+        if (msg.rule !== 'always') stopTranslation();
+        else if (!state.enabled && shouldAutoTranslate()) void startTranslation();
+        sendResponse({ok:true});
+        break;
       case 'TOGGLE_TRANSLATION':
         if (state.isTranslating) stopTranslation();
-        else if (state.isTranslated) removeTranslations();
+        else if (state.phase === 'watching') removeTranslations();
         else startTranslation();
         break;
 
@@ -220,10 +329,14 @@ function setupMessageListener() {
         break;
 
       case 'START_TRANSLATION':
-        // 立即回复，不等翻译完成；状态通过 STATUS_UPDATE 推送给 popup
-        sendResponse({ ok: true });
-        startTranslation();
-        break;
+        initialization.then(() => startTranslation())
+          .then(() => sendResponse({ ok: true, status: getTranslationStatus() }))
+          .catch((error) => sendResponse({
+            ok: false,
+            error: error?.message || '翻译失败',
+            status: getTranslationStatus(),
+          }));
+        return true;
 
       case 'REMOVE_TRANSLATION':
         removeTranslations();
@@ -231,11 +344,7 @@ function setupMessageListener() {
         break;
 
       case 'GET_STATUS':
-        sendResponse({
-          isTranslating: state.isTranslating,
-          isTranslated: state.isTranslated,
-          count: state.translatedCount,
-        });
+        sendResponse(getTranslationStatus());
         break;
 
       case 'TRANSLATE_SELECTION':
@@ -243,43 +352,19 @@ function setupMessageListener() {
         break;
 
       case 'SETTINGS_UPDATED':
-        state.settings = msg.settings;
+        {
+          removeTranslations();
+          state.settings = msg.settings;
+          sendResponse({ ok: true });
+        }
         break;
     }
   });
 }
 
-// 本地键盘快捷键监听，读取用户自定义设置
-function setupKeyboardShortcut() {
-  document.addEventListener('keydown', (e) => {
-    if (!matchesShortcut(e, state.settings?.shortcut || 'Alt+T')) return;
-    e.preventDefault();
-    if (state.isTranslating) stopTranslation();
-    else if (state.isTranslated) removeTranslations();
-    else startTranslation();
-  });
-}
-
-function matchesShortcut(e, shortcut) {
-  // shortcut 格式如 "Alt+T" / "Ctrl+Shift+J"
-  const parts = shortcut.split('+').map((p) => p.trim().toLowerCase());
-  const key = parts[parts.length - 1];
-  const needCtrl  = parts.includes('ctrl');
-  const needAlt   = parts.includes('alt');
-  const needShift = parts.includes('shift');
-  const needMeta  = parts.includes('meta');
-  return (
-    e.ctrlKey  === needCtrl  &&
-    e.altKey   === needAlt   &&
-    e.shiftKey === needShift &&
-    e.metaKey  === needMeta  &&
-    e.key.toLowerCase() === key
-  );
-}
-
-// ---- 收集需要翻译的元素 ----
 function getTranslatableElements() {
-  const customExclude = state.settings?.excludeSelectors?.trim();
+  const adapter = getSiteAdapter();
+  const customExclude = validCustomSelector(state.settings?.excludeSelectors);
   const fullExclude = customExclude
     ? `${EXCLUDE_PARENTS}, ${customExclude}`
     : EXCLUDE_PARENTS;
@@ -298,13 +383,18 @@ function getTranslatableElements() {
     if (!state.settings?.aggressiveMode && isClickable(el)) continue;
 
     const text = getCleanText(el);
-    if (!text || text.trim().length < 4) continue;
+    if (!text) continue;
+    const localTranslation = adapter?.translate?.(text.trim()) ?? null;
+    const minLength = adapter?.minTextLength ?? 4;
+    if (text.trim().length < minLength && localTranslation === null) continue;
     // 跳过超长容器（说明是包含子元素的父容器，不应直接翻译）
     if (text.trim().length > 1500) continue;
     if (isTargetLang(text)) continue;
     // 跳过纯 ASCII 的"数字 + 单词"短文本（如 "2 stars"、"15 forks"），
     // 这类 UI 计数徽章由翻译服务随机决定是否翻译，容易造成不一致。
-    if (isCountBadge(text)) continue;
+    const allowRemote = !!adapter?.allowRemoteTranslation?.(text, el);
+    if (adapter?.shouldTranslate && !adapter.shouldTranslate(text) && !allowRemote) continue;
+    if (isCountBadge(text) && localTranslation === null) continue;
 
     // 将所有祖先标记为 dominated，确保父容器不会再被选中
     let ancestor = el.parentElement;
@@ -316,9 +406,6 @@ function getTranslatableElements() {
     result.push(el);
   }
 
-  // 抢救被 dominated 父元素中的孤儿文本节点
-  rescueOrphanText(dominated, fullExclude, result);
-
   // 恢复文档顺序（从上到下依次翻译，视觉上更自然）
   result.reverse();
 
@@ -327,50 +414,6 @@ function getTranslatableElements() {
   result.sort((a, b) => contentPriority(a) - contentPriority(b));
 
   return result;
-}
-
-/**
- * 当内层子元素被选中后，外层父元素会被标记为 dominated 而跳过。
- * 但如果父元素本身还有直属文本节点（不在任何子元素内），这些文本就会丢失。
- * 典型场景：GitHub 渲染 markdown 时剥离 <example> 等自定义标签后，
- * 文本变成裸文本节点暴露在 <li> 里。
- * 此函数将这些孤儿文本包裹进 <span class="lt-wrap"> 以便独立翻译。
- */
-function rescueOrphanText(dominated, fullExclude, result) {
-  const selector = getTranslateSelectors();
-  for (const el of dominated) {
-    if (typeof el.matches !== 'function' || !el.matches(selector)) continue;
-    if (el.hasAttribute(LT.DONE_ATTR)) continue;
-    if (el.closest(fullExclude)) continue;
-    if (!isVisible(el)) continue;
-    if (shouldSkipNonAggressiveUiChrome(el)) continue;
-    if (el.querySelector(`.${LT.WRAP_CLASS}`)) continue;
-
-    // 收集连续的直属文本节点分组
-    let group = [];
-    const groups = [];
-    for (const node of el.childNodes) {
-      if (node.nodeType === 3 && node.textContent.trim()) {
-        group.push(node);
-      } else {
-        if (group.length) { groups.push(group); group = []; }
-      }
-    }
-    if (group.length) groups.push(group);
-
-    for (const g of groups) {
-      const text = g.map((n) => n.textContent).join('').trim();
-      if (text.length < 4) continue;
-      if (isTargetLang(text)) continue;
-      if (isCountBadge(text)) continue;
-
-      const wrap = document.createElement('span');
-      wrap.className = LT.WRAP_CLASS;
-      el.insertBefore(wrap, g[0]);
-      for (const tn of g) wrap.appendChild(tn);
-      result.push(wrap);
-    }
-  }
 }
 
 function contentPriority(el) {
@@ -409,6 +452,9 @@ function shouldSkipInvisibleNode(node) {
   if (['script', 'style', 'noscript', 'template', 'iframe'].includes(tag)) return true;
   // DOM hidden 属性：元素不可见
   if (node.hasAttribute('hidden')) return true;
+  if (node.matches?.(EXCLUDE_PARENTS)) return true;
+  const custom = validCustomSelector(state.settings?.excludeSelectors);
+  if (custom && node.matches?.(custom)) return true;
   // CSS sr-only / visually-hidden：仅屏幕阅读器可见，不是页面实际文字
   const cls = node.classList;
   if (cls.contains('sr-only') || cls.contains('visually-hidden') || cls.contains('screen-reader-only')) return true;
@@ -417,6 +463,83 @@ function shouldSkipInvisibleNode(node) {
   // 自定义 tooltip 标签
   if (tag === 'tool-tip' || tag === 'tooltip') return true;
   return false;
+}
+
+function getTranslationStatus() {
+  return {
+    phase: state.phase,
+    error: state.error,
+    isTranslating: state.isTranslating,
+    isTranslated: state.isTranslated,
+    count: state.translatedCount,
+  };
+}
+
+// Site adapters may keep visible labels in attributes rather than text nodes,
+// especially search placeholders and aria-labels. Translate only entries
+// covered by the adapter's local dictionary; unknown attributes stay untouched.
+function translateAdapterAttributes() {
+  const adapter = getSiteAdapter();
+  if (!adapter?.attributes?.length) return;
+
+  const selector = adapter.attributes.map((attribute) => `[${attribute}]`).join(',');
+  document.querySelectorAll(selector).forEach((element) => {
+    if (element.closest('script,style,noscript,template,svg,.lt-result,[translate="no"],.notranslate')) return;
+    const excluded = validCustomSelector(state.settings?.excludeSelectors);
+    if (excluded && element.closest(excluded)) return;
+    if (element.isContentEditable && !adapter.translateContentEditableAttributes) return;
+
+    const previous = state.translatedAttributes.get(element) || {};
+    let changed = false;
+
+    adapter.attributes.forEach((attribute) => {
+      if (!element.hasAttribute(attribute)) return;
+      const current = element.getAttribute(attribute) || '';
+      const tracked = previous[attribute];
+      const source = tracked && current === tracked.translated ? tracked.original : current;
+      const translation = adapter.translate(source);
+      if (!translation || translation === source) return;
+
+      previous[attribute] = { original: source, translated: translation };
+      if (current !== translation) element.setAttribute(attribute, translation);
+      changed = true;
+    });
+
+    if (changed) state.translatedAttributes.set(element, previous);
+  });
+}
+
+function preserveWhitespace(original, translation) {
+  const source = String(original);
+  const start = source.match(/^\s*/)?.[0] || '';
+  const end = source.match(/\s*$/)?.[0] || '';
+  return `${start}${String(translation).trim()}${end}`;
+}
+
+// Dictionary adapters replace the actual text node in place so navigation
+// stays one line tall and the normal transLite bilingual <span> is not added.
+function replaceAdapterText(element, translation, sourceText) {
+  const nodes = [];
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node.parentElement?.closest(EXCLUDE_PARENTS)) continue;
+    nodes.push(node);
+  }
+
+  const source = String(sourceText || '').trim();
+  const exact = nodes.filter((textNode) => textNode.nodeValue.trim() === source);
+  const target = exact.length === 1 ? exact[0] : nodes.length === 1 ? nodes[0] : null;
+  if (!target) return false;
+
+  const translated = preserveWhitespace(target.nodeValue, translation);
+  if (!state.replacedTextNodes.has(target)) {
+    state.replacedTextNodes.set(target, { original: target.nodeValue, translated });
+  } else {
+    state.replacedTextNodes.get(target).translated = translated;
+  }
+  target.nodeValue = translated;
+  return true;
 }
 
 // 常见英文功能词：出现这些词说明文本是真实句子，不应视为 UI 标签
@@ -469,117 +592,189 @@ function isTargetLang(text) {
   return matchCount / t.length > detector.threshold;
 }
 
-// ---- 主翻译流程 ----
+// ---- Translation queue: viewport first, bounded concurrent batches. ----
+function collectUnits(adapter, root = document.body) {
+  if (adapter) {
+    return getTranslatableElements().map(el => ({ el, text: getCleanText(el).trim(), mode: 'adapter' }));
+  }
+  return LT_DOM.collect(state.settings, state.completedNodes, root).filter(unit => !isTargetLang(unit.text));
+}
+
+function unitIsCurrent(unit) {
+  if (unit.invalidated) return false;
+  if (unit.mode === 'adapter') return unit.el.isConnected !== false && getCleanText(unit.el).trim() === unit.text;
+  return LT_DOM.isCurrent(unit);
+}
+
+function applyTranslation(unit, translation, adapter) {
+  state.queuedUnits.delete(unit);
+  state.pendingUnits.delete(unit.node || unit.sources?.[0]?.node || unit.el);
+  if (!unitIsCurrent(unit)) { state.rescanRequested = true; if (unit.el.isConnected) state.dirtyRoots.add(unit.el); return; }
+  if (unit.mode === 'adapter') {
+    if (!replaceAdapterText(unit.el, translation, unit.text)) return;
+    unit.el.setAttribute(LT.DONE_ATTR, '');
+  } else {
+    if (unit.mode === 'replace') {
+      const value = preserveWhitespace(unit.node.nodeValue, translation);
+      state.replacedTextNodes.set(unit.node, { original: unit.node.nodeValue, translated: value });
+      unit.node.nodeValue = value;
+    } else {
+      if (translation.trim() !== unit.text) unit.span = insertTranslation(unit, translation);
+      state.outputUnits.add(unit);
+    }
+    unit.sources.forEach(source => state.completedNodes.add(source.node));
+  }
+  state.translatedCount++;
+}
+
+function batchUnits(units) {
+  const batches = [];
+  let chunk = [], size = 0;
+  for (const unit of units) {
+    if (chunk.length && (chunk.length >= 8 || size + unit.text.length > 3000)) {
+      batches.push(chunk); chunk = []; size = 0;
+    }
+    chunk.push(unit); size += unit.text.length;
+  }
+  if (chunk.length) batches.push(chunk);
+  return batches;
+}
+
+function nearby(unit) {
+  const r = unit.el.getBoundingClientRect?.();
+  return !r || (r.bottom >= -innerHeight * 0.5 && r.top <= innerHeight * 1.5 && r.right >= 0 && r.left <= innerWidth);
+}
 async function startTranslation() {
-  if (state.isTranslating) return;
+  if (state.isTranslating || document.hidden) return;
+  const generation = ++state.generation;
+  if (!state.enabled) { state.dirtyRoots.add(document.body); state.pendingUnits.clear(); }
+  state.enabled = true;
+  observePage();
+  state.rescanRequested = false;
   state.isTranslating = true;
+  state.phase = 'translating'; state.error = '';
   notifyPopup();
-
-  // 更新图标为激活状态
-  sendRuntimeMessageSafe({ type: 'SET_ICON', active: true });
-
+  let failed = false, taskId = null;
   try {
-    const elements = getTranslatableElements();
-    if (elements.length === 0) {
-      state.isTranslated = true;
-      return;
+    translateAdapterAttributes();
+    const adapter = getSiteAdapter();
+    const roots = adapter ? [document.body] : [...state.dirtyRoots].filter(root => root.isConnected);
+    state.dirtyRoots.clear();
+    const minimalRoots = roots.filter(root => !roots.some(other => other !== root && other.contains(root)));
+    for (const root of minimalRoots) for (const unit of collectUnits(adapter, root)) {
+      state.pendingUnits.set(unit.node || unit.sources?.[0]?.node || unit.el, unit);
     }
-
-    const BATCH = 10;
-
-    for (let i = 0; i < elements.length; i += BATCH) {
-      if (!state.isTranslating) break;
-
-      const batch = elements.slice(i, i + BATCH);
-      const pending = batch.filter((el) => !el.hasAttribute(LT.DONE_ATTR));
-      if (pending.length === 0) continue;
-
-      const texts = pending.map((el) => getCleanText(el).trim());
-      pending.forEach((el) => el.setAttribute(LT.PENDING_ATTR, ''));
-
-      try {
-        const res = await sendTranslateMessage(texts);
-
-        if (res?.success && res.translations) {
-          pending.forEach((el, idx) => {
-            const tr = res.translations[idx];
-            if (tr) insertTranslation(el, tr);
-            el.removeAttribute(LT.PENDING_ATTR);
-            el.setAttribute(LT.DONE_ATTR, '');
-            state.translatedCount++;
-          });
-        } else {
-          pending.forEach((el) => el.removeAttribute(LT.PENDING_ATTR));
-          if (res?.error) showError(res.error);
+    for (const [key, unit] of state.pendingUnits) if (!unitIsCurrent(unit)) state.pendingUnits.delete(key);
+    const units = [...state.pendingUnits.values()].filter(nearby);
+    state.queuedUnits = new Set(units);
+    const priority = unit => {
+      const r = unit.el.getBoundingClientRect?.();
+      return (r && (r.bottom < 0 || r.top > innerHeight) ? 10 : 0) + contentPriority(unit.el);
+    };
+    units.sort((a,b) => priority(a)-priority(b));
+    const remote = [];
+    for (const unit of units) {
+      const local = adapter?.translate?.(unit.text) ?? null;
+      if (local !== null) applyTranslation(unit, local, adapter);
+      else if (!adapter?.localOnly || adapter.allowRemoteTranslation?.(unit.text, unit.el)) remote.push(unit);
+      else state.pendingUnits.delete(unit.node || unit.sources?.[0]?.node || unit.el);
+    }
+    const batches = batchUnits(remote);
+    if (batches.length) {
+      taskId = crypto.randomUUID(); state.taskId = taskId;
+      await taskMessage({type:'BEGIN_TASK', taskId});
+      if (generation !== state.generation) { await taskMessage({type:'CANCEL_TASK', taskId}); return; }
+    }
+    let next = 0;
+    const worker = async () => {
+      while (generation === state.generation && !failed && !document.hidden && next < batches.length) {
+        const batch = batches[next++].filter(unitIsCurrent);
+        if (!batch.length) continue;
+        batch.forEach(unit => unit.el.setAttribute(LT.PENDING_ATTR, ''));
+        try {
+          const response = await sendTranslateMessage(batch.map(unit => unit.text), taskId);
+          if (generation !== state.generation) return;
+          if (!Array.isArray(response.translations) || response.translations.length !== batch.length || response.translations.some(text => typeof text !== 'string' || !text.trim())) throw new Error('译文数量或格式不匹配，请重试');
+          batch.forEach((unit,index) => applyTranslation(unit,response.translations[index],adapter));
+        } catch(error) {
+          if (generation !== state.generation) return;
+          failed = true; state.error = error.message || '翻译失败';
+        } finally {
+          if (generation === state.generation) batch.forEach(unit => unit.el.removeAttribute(LT.PENDING_ATTR));
         }
-      } catch (err) {
-        pending.forEach((el) => el.removeAttribute(LT.PENDING_ATTR));
-        showError(err.message || '翻译失败');
-        break;
+        if (generation === state.generation) notifyPopup();
       }
-
-      notifyPopup();
-    }
-
-    state.isTranslated = true;
+    };
+    await Promise.all(Array.from({length:state.settings.service === 'openai' ? 2 : 3},worker));
+  } catch(error) {
+    if (generation === state.generation) { failed = true; state.error = error.message || '翻译失败'; }
   } finally {
-    state.isTranslating = false;
-    notifyPopup();
+    if (taskId) sendRuntimeMessageSafe({type:'END_TASK',taskId});
+    if (generation === state.generation) {
+      state.taskId = null; state.queuedUnits.clear(); state.isTranslating = false;
+      state.isTranslated = state.translatedCount > 0;
+      state.phase = failed ? (state.isTranslated ? 'partial' : 'error') : 'watching';
+      if (failed) {state.enabled = false; observer.disconnect(); showError(state.error);}
+      notifyPopup();
+      if (state.rescanRequested && !failed) scheduleRescan();
+    }
   }
 }
 
-// ---- 插入译文 ----
-function insertTranslation(el, translation) {
-  // 防止重复插入
-  const existing = el.querySelector(`.${LT.RESULT_CLASS}`);
-  if (existing) {
-    existing.textContent = translation;
-    return;
-  }
-
+function insertTranslation(unit, translation) {
   const span = document.createElement('span');
   span.className = LT.RESULT_CLASS;
   span.textContent = translation;
-
-  const theme = state.settings?.theme || 'underline';
-  span.dataset.theme = theme;
-
-  const colorMode = state.settings?.translationColorMode || 'inherit';
-  if (colorMode === 'custom' && state.settings?.translationColor) {
+  span.lang = state.settings.targetLang;
+  span.dir = 'auto';
+  span.dataset.theme = state.settings.theme || 'underline';
+  if (state.settings.translationColorMode === 'custom' && state.settings.translationColor) {
     span.style.setProperty('--lt-color', state.settings.translationColor);
   }
-
-  el.appendChild(span);
+  // Insert at the text run's boundary, keeping nested blocks and every
+  // original node (including React-owned text nodes) in their original place.
+  unit.anchor.after(span);
+  return span;
 }
 
-// ---- 停止翻译（保留已翻译内容，不清除）----
 function stopTranslation() {
-  if (!state.isTranslating) return;
-  // 将 isTranslating 置 false，startTranslation 循环下次 batch 检查时会自动 break
-  // finally 块会负责将 isTranslated 置 true 并 notifyPopup
+  ++state.generation;
+  if (state.taskId) sendRuntimeMessageSafe({type:'CANCEL_TASK', taskId:state.taskId});
+  state.taskId = null; state.phase = 'stopped'; state.error = '';
+  observer?.disconnect();
+  state.enabled = false;
+  state.rescanRequested = false;
+  state.queuedUnits.clear();
+  clearTimeout(rescanTimer);
+  clearTimeout(autoStartTimer);
   state.isTranslating = false;
+  state.isTranslated = state.translatedCount > 0;
+  document.querySelectorAll(`[${LT.PENDING_ATTR}]`).forEach(el => el.removeAttribute(LT.PENDING_ATTR));
+
+  notifyPopup();
 }
 
-// ---- 移除所有译文 ----
 function removeTranslations() {
-  document.querySelectorAll(`.${LT.RESULT_CLASS}`).forEach((el) => el.remove());
-  // 还原 lt-wrap 包裹：把文本节点放回原父级，删除 wrapper span
-  document.querySelectorAll(`.${LT.WRAP_CLASS}`).forEach((wrap) => {
-    const parent = wrap.parentNode;
-    while (wrap.firstChild) parent.insertBefore(wrap.firstChild, wrap);
-    wrap.remove();
+  stopTranslation();
+  document.querySelectorAll(`.${LT.RESULT_CLASS}`).forEach(el => el.remove());
+  document.querySelectorAll(`[${LT.DONE_ATTR}]`).forEach(el => el.removeAttribute(LT.DONE_ATTR));
+  state.replacedTextNodes.forEach((record, node) => {
+    // A SPA may have reused this node for new source content. Never restore
+    // obsolete text over a change made by the application.
+    if (node.isConnected && node.nodeValue === record.translated) node.nodeValue = record.original;
   });
-  document.querySelectorAll(`[${LT.DONE_ATTR}]`).forEach((el) => {
-    el.removeAttribute(LT.DONE_ATTR);
+  state.replacedTextNodes.clear();
+  state.translatedAttributes.forEach((attributes, el) => {
+    for (const [name, record] of Object.entries(attributes)) {
+      if (el.isConnected && el.getAttribute(name) === record.translated) el.setAttribute(name, record.original);
+    }
   });
-  document.querySelectorAll(`[${LT.PENDING_ATTR}]`).forEach((el) => {
-    el.removeAttribute(LT.PENDING_ATTR);
-  });
+  state.translatedAttributes.clear();
+  state.outputUnits.clear();
+  state.completedNodes.clear();
   state.isTranslated = false;
-  state.isTranslating = false;
-  state.translatedCount = 0;
-
-  sendRuntimeMessageSafe({ type: 'SET_ICON', active: false });
+  state.translatedCount = 0; state.phase = 'idle';
+  state.pendingUnits.clear(); state.dirtyRoots.clear();
   notifyPopup();
 }
 
@@ -617,9 +812,26 @@ async function showSelectionPopup(text) {
   }, 100);
 
   try {
-    const res = await sendTranslateMessage([text]);
     const resultEl = popup.querySelector('.lt-popup-result');
     resultEl.classList.remove('lt-loading');
+    const adapter = getSiteAdapter();
+    const localTranslation = adapter?.translate?.(text) ?? null;
+    if (localTranslation !== null) {
+      resultEl.textContent = localTranslation;
+      return;
+    }
+    const selectionElement = window.getSelection?.()?.anchorNode?.parentElement || null;
+    if (adapter?.localOnly && !adapter?.allowRemoteTranslation?.(text, selectionElement)) {
+      resultEl.textContent = '该词条暂未收录';
+      return;
+    }
+
+    const taskId = crypto.randomUUID();
+    selectionTask = taskId;
+    await taskMessage({type:'BEGIN_TASK', taskId});
+    if (selectionTask !== taskId) { await taskMessage({type:'CANCEL_TASK',taskId}); return; }
+    let res;
+    try {res = await sendTranslateMessage([text], taskId);} finally {sendRuntimeMessageSafe({type:'END_TASK',taskId});}
     if (res?.success) {
       resultEl.textContent = res.translations[0] || '（无结果）';
     } else {
@@ -634,7 +846,10 @@ async function showSelectionPopup(text) {
   }
 }
 
+let selectionTask = null;
 function removeSelectionPopup() {
+  if (selectionTask) sendRuntimeMessageSafe({type:'CANCEL_TASK', taskId:selectionTask});
+  selectionTask = null;
   document.getElementById(LT.POPUP_ID)?.remove();
 }
 
@@ -663,22 +878,16 @@ function showError(msg) {
 // ---- 通知 popup 状态更新 ----
 // 必须用回调并读取 lastError，否则控制台会标黄 "Unchecked runtime.lastError"（Promise 的 catch 消不掉）
 function notifyPopup() {
-  const data = {
-    isTranslating: state.isTranslating,
-    isTranslated: state.isTranslated,
-    count: state.translatedCount,
-  };
+  const data = getTranslationStatus();
   sendRuntimeMessageSafe({ type: 'STATUS_UPDATE', data }, () => {
     if (!isRuntimeAvailable()) return;
     void chrome.runtime.lastError;
   });
 }
 
-// ---- 加载设置 ----
-function loadSettings() {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get(LT_DEFAULTS, resolve);
-  });
+// The background sends only page-rendering preferences, never credentials.
+async function loadSettings() {
+  return (await taskMessage({type:'GET_PAGE_SETTINGS'})).settings;
 }
 
 function escapeHtml(str) {
@@ -690,28 +899,15 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-// ---- 发送翻译请求（带一次重试，应对 Service Worker 被 Chrome 休眠后重唤的情况）----
-async function sendTranslateMessage(texts) {
-  try {
-    return await chrome.runtime.sendMessage({
-      type: 'TRANSLATE',
-      texts,
-      settings: state.settings,
-    });
-  } catch (err) {
-    // SW 被休眠时会抛 "Could not establish connection"，等一小会重试一次
-    if (err?.message?.includes('Could not establish connection') ||
-        err?.message?.includes('message channel closed')) {
-      await new Promise((r) => setTimeout(r, 600));
-      return chrome.runtime.sendMessage({
-        type: 'TRANSLATE',
-        texts,
-        settings: state.settings,
-      });
-    }
-    throw err;
-  }
+async function taskMessage(message) {
+  const result = await chrome.runtime.sendMessage(message);
+  if (!result?.success) throw new Error(result?.error || '扩展连接中断，请重新点击翻译');
+  return result;
 }
+function sendTranslateMessage(texts, taskId) { return taskMessage({type:'TRANSLATE', texts, taskId}); }
 
-// ---- 启动 ----
-init();
+const initialization = init();
+setupMessageListener();
+initialization.catch(error => {state.phase='error'; state.error=error.message; notifyPopup();});
+
+})();

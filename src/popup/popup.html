@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>轻量翻译</title>
+  <title>久远的翻译工具</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
   <div class="header">
     <div class="logo">
       <img src="../images/1.png" width="22" height="22" style="border-radius:5px;display:block;" />
-      <span class="logo-text">轻量翻译</span>
+      <span class="logo-text">久远的翻译工具</span>
     </div>
     <a href="#" id="btn-settings" class="icon-btn" title="设置">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -20,7 +20,7 @@
     </a>
   </div>
 
-  <div class="status-bar">
+  <div class="status-bar" role="status" aria-live="polite">
     <div id="status-dot" class="status-dot idle"></div>
     <span id="status-text">准备就绪</span>
     <span id="count-badge" class="count-badge hidden">0 段</span>
@@ -46,6 +46,8 @@
     </select>
   </div>
 
+  <div class="site-controls"><label for="site-rule">此网站</label><select id="site-rule"><option value="manual">仅本次翻译</option><option value="always">此网站始终翻译</option><option value="never">此网站不自动翻译</option></select></div>
+  <div class="disclosure"><p id="destination"></p><label id="consent-row"><input type="checkbox" id="consent"> 同意发送待译文字，用于生成译文</label><p id="key-warning" class="hidden">请先在设置中输入或解锁 API Key。</p></div>
   <div class="actions">
     <button id="btn-translate" class="btn-primary">
       <span id="btn-icon" class="btn-icon-wrap">
@@ -57,12 +59,15 @@
     </button>
   </div>
 
+  <div class="actions"><button id="btn-restore" class="btn-secondary hidden">恢复原文</button></div>
   <div class="footer">
     <span class="service-badge" id="service-badge">Google</span>
     <span class="hint" id="shortcut-hint">Alt+T 快速切换</span>
   </div>
 
   <script src="../defaults.js"></script>
+  <script src="../config.js"></script>
+  <script src="../ui.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

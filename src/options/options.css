@@ -142,8 +142,8 @@ body {
 
 .field-hint {
   margin-top: 5px;
-  font-size: 11px;
-  color: #999;
+  font-size: 12px;
+  color: #687382;
   line-height: 1.5;
 }
 
@@ -297,6 +297,22 @@ select {
   background: #e8f0fe;
   border-color: #1a73e8;
   color: #1a73e8;
+}
+
+.preset-btn[aria-pressed="true"] {
+  background: #e8f0fe;
+  border-color: #1a73e8;
+  color: #1a73e8;
+}
+
+.model-policy-hint {
+  margin-top: 9px;
+  padding: 9px 12px;
+  background: #f0f6ff;
+  border-radius: 7px;
+  color: #315a8c;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 /* ===== Theme Cards ===== */
@@ -538,4 +554,25 @@ select {
 /* ===== Misc ===== */
 .hidden {
   display: none !important;
+}
+.text-button { border:0; background:transparent; color:#185abc; cursor:pointer; padding:8px 0; font:inherit; }
+.key-controls { display:grid; gap:10px; }
+.key-controls input[type=checkbox], .consent input { width:auto; margin-right:6px; }
+.destination { overflow-wrap:anywhere; font-weight:500; }
+.consent { display:block; line-height:1.7; font-size:13px; }
+#test-result { white-space:pre-line; overflow-wrap:anywhere; line-height:1.7; font-size:13px; }
+.site-rule { display:flex; justify-content:space-between; align-items:center; gap:16px; overflow-wrap:anywhere; }
+button:disabled { opacity:.55; cursor:wait; }
+button:focus-visible, a:focus-visible, [role=button]:focus-visible { outline:2px solid #1a73e8; outline-offset:3px; }
+@media (prefers-color-scheme:dark) {
+  body { background:#15191f; color:#e7edf6; }
+  .card, .radio-card, .theme-card { background:#20262f; border-color:#434d5c; }
+  .radio-card:has(input:checked), .theme-card:has(input:checked) { background:#243b5b; border-color:#74a6ff; }
+  .theme-preview,.color-option,.color-hex { color:#dce8fa; }
+  .model-policy-hint { background:#243b5b; color:#c8dcff; }
+  .btn-reset,.preset-btn { background:#293343; color:#dce8fa; border-color:#566272; }
+  .field-label,.card-title,.radio-title,.toggle-label { color:#e7edf6; }
+  input,textarea,select { background:#15191f!important; color:#e7edf6!important; border-color:#566272!important; }
+  .field-hint,.radio-desc,.toggle-desc { color:#bac5d5; }
+  .text-button,a { color:#a9c7ff; }
 }

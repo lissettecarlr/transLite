@@ -1,143 +1,71 @@
-const $ = (id) => document.getElementById(id);
-
-let currentTab = null;
-let settings = {};
-let currentStatus = { isTranslating: false, isTranslated: false, count: 0 };
-
-async function init() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  currentTab = tab;
-
-  settings = await loadSettings();
-  applySettings();
-  await refreshStatus();
-  bindEvents();
+const $=id=>document.getElementById(id);
+let currentTab, view, currentStatus={phase:'idle',count:0}, busy=false;
+function status(text,error=false){$('status-text').textContent=text;$('status-dot').className=`status-dot ${error?'error':'idle'}`;}
+function updateUI(state={phase:'idle',count:0}) {
+  currentStatus=state;
+  const phase=state.phase||'idle', count=state.count||0;
+  const labels={idle:'准备就绪',translating:`翻译中，已完成 ${count} 段`,watching:`附近内容已处理 · ${count} 段 · 滚动继续`,partial:`部分完成 ${count} 段：${state.error||'请重试'}`,error:state.error||'翻译失败，请重试',stopped:`已停止，保留 ${count} 段译文`};
+  status(labels[phase],['partial','error'].includes(phase));
+  $('btn-text').textContent={idle:'翻译此页面',translating:'停止翻译',watching:'暂停自动续译',partial:'重试未完成内容',error:'重试翻译',stopped:'继续翻译'}[phase];
+  $('btn-translate').className=['translating','watching'].includes(phase)?'btn-stop':'btn-primary';
+  $('btn-restore').classList.toggle('hidden',count===0);
+  $('count-badge').textContent=`${count} 段`;$('count-badge').classList.toggle('hidden',count===0);
 }
-
-function applySettings() {
-  $('target-lang').value = settings.targetLang || 'zh-CN';
-
-  const serviceName = { google: 'Google', openai: settings.model || 'OpenAI' };
-  $('service-badge').textContent = serviceName[settings.service] || 'Google';
-
-  const shortcut = settings.shortcut || LT_DEFAULTS.shortcut;
-  $('shortcut-hint').textContent = `${shortcut} 快速切换`;
+async function refresh(){
+  try{updateUI(await chrome.tabs.sendMessage(currentTab.id,{type:'GET_STATUS'}));}catch{updateUI();}
 }
-
-async function refreshStatus() {
-  if (!currentTab?.id) return;
-
-  try {
-    const res = await chrome.tabs.sendMessage(currentTab.id, { type: 'GET_STATUS' });
-    updateUI(res);
-  } catch {
-    // content script 未注入（如 chrome:// 页面）
-    setStatus('idle', '当前页面不支持翻译');
-    $('btn-translate').disabled = true;
+async function run(action){
+  if(busy)return;busy=true;
+  $('btn-translate').disabled=true;$('site-rule').disabled=true;
+  try{await action();}catch(error){status(error.message,true);}
+  finally{busy=false;$('btn-translate').disabled=false;$('site-rule').disabled=false;}
+}
+async function authorize(site=false){
+  if(!view.consent&&!$('consent').checked)throw new Error('请先确认文字发送至以上翻译服务');
+  if(view.settings.service==='openai'&&!view.hasKey)throw new Error('请打开设置，输入或解锁 API Key');
+  const origins=[LT_CONFIG.originPattern(view.destination)];
+  if(site)origins.push(LT_CONFIG.originPattern(currentTab.url));
+  // Must remain before the first await so Chrome recognizes the user gesture.
+  if(!await chrome.permissions.request({origins:[...new Set(origins)]}))throw new Error('未获得访问权限，翻译尚未启动');
+  if(!view.consent){await LT_UI.request('CONFIRM_SERVICE',{destination:view.destination});view.consent=true;$('consent-row').classList.add('hidden');}
+}
+async function command(command){return LT_UI.request('PAGE_COMMAND',{tabId:currentTab.id,command});}
+async function init(){
+  [currentTab]=await chrome.tabs.query({active:true,currentWindow:true});
+  view=await LT_UI.request('GET_SETTINGS');
+  const settings=view.settings;
+  $('target-lang').value=settings.targetLang;
+  $('service-badge').textContent=settings.service==='google'?'Google':settings.model;
+  $('destination').textContent=`待译文字发送至 ${view.destination}${settings.service==='openai'?'，可能产生服务商费用。':'。'}`;
+  $('consent').checked=view.consent;$('consent-row').classList.toggle('hidden',view.consent);
+  $('key-warning').classList.toggle('hidden',settings.service!=='openai'||view.hasKey);
+  const [shortcut]=await chrome.commands.getAll();if(shortcut?.shortcut)$('shortcut-hint').textContent=`${shortcut.shortcut} 快速切换`;
+  if(!/^https?:\/\//.test(currentTab?.url||'')||/^https:\/\/(chromewebstore.google.com|chrome.google.com\/webstore)/.test(currentTab.url)) {
+    status('当前页面不支持翻译，请打开普通网页');$('btn-translate').disabled=true;$('site-rule').disabled=true;return;
   }
-}
-
-// SVG 图标
-const ICON_TRANSLATE = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg>`;
-const ICON_STOP = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
-const ICON_CLEAR = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>`;
-
-function updateUI({ isTranslating, isTranslated, count } = {}) {
-  currentStatus = { isTranslating: !!isTranslating, isTranslated: !!isTranslated, count: count ?? 0 };
-  const btn = $('btn-translate');
-
-  if (isTranslating) {
-    setStatus('loading', `翻译中… 已完成 ${count ?? 0} 段`);
-    btn.disabled = false;
-    btn.className = 'btn-stop';
-    $('btn-icon').innerHTML = ICON_STOP;
-    $('btn-text').textContent = '停止翻译';
-    $('count-badge').classList.add('hidden');
-  } else if (isTranslated) {
-    setStatus('done', `翻译完成，共 ${count ?? 0} 段`);
-    btn.disabled = false;
-    btn.className = 'btn-secondary';
-    $('btn-icon').innerHTML = ICON_CLEAR;
-    $('btn-text').textContent = '取消翻译';
-    $('count-badge').classList.remove('hidden');
-    $('count-badge').textContent = `${count ?? 0} 段`;
-  } else {
-    setStatus('idle', '准备就绪');
-    btn.disabled = false;
-    btn.className = 'btn-primary';
-    $('btn-icon').innerHTML = ICON_TRANSLATE;
-    $('btn-text').textContent = '翻译此页面';
-    $('count-badge').classList.add('hidden');
-  }
-}
-
-function setStatus(type, text) {
-  $('status-dot').className = `status-dot ${type}`;
-  $('status-text').textContent = text;
-}
-
-function bindEvents() {
-  $('btn-translate').addEventListener('click', async () => {
-    if (!currentTab?.id) return;
-
-    if (currentStatus.isTranslating) {
-      // 停止翻译（保留已翻译内容）
-      await chrome.tabs.sendMessage(currentTab.id, { type: 'STOP_TRANSLATION' }).catch(() => {});
-      return;
-    }
-
-    if (currentStatus.isTranslated) {
-      // 取消翻译（清除所有译文）
-      await chrome.tabs.sendMessage(currentTab.id, { type: 'REMOVE_TRANSLATION' }).catch(() => {});
-      updateUI({ isTranslating: false, isTranslated: false, count: 0 });
-      return;
-    }
-
-    // 开始翻译
-    const lang = $('target-lang').value;
-    if (lang !== settings.targetLang) {
-      settings.targetLang = lang;
-      await chrome.storage.sync.set({ targetLang: lang });
-      await chrome.tabs.sendMessage(currentTab.id, {
-        type: 'SETTINGS_UPDATED',
-        settings,
-      }).catch(() => {});
-    }
-
-    updateUI({ isTranslating: true, isTranslated: false, count: 0 });
-
-    try {
-      await chrome.tabs.sendMessage(currentTab.id, { type: 'START_TRANSLATION' });
-    } catch {
-      setStatus('error', '无法连接到页面，请刷新后重试');
-      updateUI({ isTranslating: false, isTranslated: false, count: 0 });
-    }
-  });
-
-  $('btn-settings').addEventListener('click', () => {
-    chrome.runtime.openOptionsPage();
-  });
-
-  $('target-lang').addEventListener('change', (e) => {
-    settings.targetLang = e.target.value;
-    const serviceName = { google: 'Google', openai: settings.model || 'OpenAI' };
-    $('service-badge').textContent = serviceName[settings.service] || 'Google';
-  });
-
-  // content → SW 写入 session，popup 监听（content 的 sendMessage 进不了 popup）
-  chrome.storage.session.onChanged.addListener((changes, area) => {
-    if (area !== 'session' || !currentTab?.id) return;
-    const key = `ltStatus_${currentTab.id}`;
-    if (changes[key]?.newValue != null) {
-      updateUI(changes[key].newValue);
-    }
+  $('site-rule').value=view.siteRules[new URL(currentTab.url).origin]||'manual';
+  await refresh();
+  $('btn-translate').addEventListener('click',()=>run(async()=>{
+    if(['translating','watching'].includes(currentStatus.phase)){await command('STOP_TRANSLATION');await refresh();return;}
+    await authorize();
+    if($('target-lang').value!==view.settings.targetLang){await LT_UI.request('SET_TARGET',{targetLang:$('target-lang').value});view.settings.targetLang=$('target-lang').value;}
+    updateUI({...currentStatus,phase:'translating'});
+    // Keep Stop usable while the page's long-running response is pending.
+    void command('START_TRANSLATION').then(async result=>{if(result.status)updateUI(result.status);else await refresh();}).catch(error=>status(error.message,true));
+  }));
+  $('btn-restore').addEventListener('click',()=>run(async()=>{await command('REMOVE_TRANSLATION');await refresh();}));
+  $('site-rule').addEventListener('change',()=>run(async()=>{
+    const rule=$('site-rule').value, origin=new URL(currentTab.url).origin;
+    try{
+      if(rule==='always')await authorize(true);
+      await LT_UI.request('SET_SITE_RULE',{tabId:currentTab.id,rule});view.siteRules[origin]=rule;
+      if(rule==='always')void command('START_TRANSLATION').then(refresh).catch(error=>status(error.message,true));
+      await refresh();
+    }catch(error){$('site-rule').value=view.siteRules[origin]||'manual';throw error;}
+  }));
+  chrome.storage.onChanged.addListener((changes,area)=>{
+    if(area==='session'&&changes[`ltStatus_${currentTab.id}`]?.newValue)updateUI(changes[`ltStatus_${currentTab.id}`].newValue);
   });
 }
-
-function loadSettings() {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get(LT_DEFAULTS, resolve);
-  });
-}
-
-init();
+$('btn-settings').addEventListener('click',event=>{event.preventDefault();chrome.runtime.openOptionsPage();});
+init().catch(error=>status(error.message,true));

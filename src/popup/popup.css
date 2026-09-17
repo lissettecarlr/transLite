@@ -244,3 +244,19 @@ body {
   color: #aaa;
   font-size: 11px;
 }
+.site-controls { display:flex; gap:10px; align-items:center; padding:8px 14px; }
+.site-controls select { flex:1; min-width:0; padding:6px; border:1px solid #c6ccd6; border-radius:5px; }
+.disclosure { padding:0 14px; font-size:12px; line-height:1.6; color:#526074; overflow-wrap:anywhere; }
+.disclosure input { vertical-align:middle; }
+#key-warning { color:#a74300; }
+.status-bar { align-items:flex-start; }
+#status-text { overflow-wrap:anywhere; }
+.service-badge { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+button:focus-visible,a:focus-visible,select:focus-visible { outline:2px solid #1a73e8; outline-offset:2px; }
+@media (prefers-color-scheme:dark) {
+  body { background:#1b2028; color:#e5edf6; }
+  .header,.lang-row,.status-bar { border-color:#424e5f; }
+  .status-bar,.btn-secondary { background:#272f3b; color:#e5edf6; }
+  .disclosure,.lang-label { color:#b8c7db; }
+  .site-controls select,.lang-select { background:#1b2028; color:#e5edf6; }
+}
