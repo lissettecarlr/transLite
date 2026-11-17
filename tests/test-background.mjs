@@ -21,6 +21,8 @@ function harness(responder) {
       return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(texts.map(text => `译文：${text}`)) } }] }) };
     },
   });
+  vm.runInContext(fs.readFileSync(new URL('../src/defaults.js', import.meta.url),'utf8'),context);
+  vm.runInContext(fs.readFileSync(new URL('../src/config.js', import.meta.url),'utf8'),context);
   vm.runInContext(fs.readFileSync(new URL('../src/model-policy.js', import.meta.url),'utf8'),context);
   vm.runInContext(source, context);
   return { calls, translate: (texts, settings = {}) => context.handleTranslation(texts, { service: 'openai', apiKey: 'fixture-key', model: 'qwen3.5-flash', ...settings }) };
@@ -174,4 +176,36 @@ test('model default mode omits reasoning overrides and has its own cache', async
   assert.equal(h.calls.length, 2);
   assert.equal(h.calls[1].body.reasoning_effort, undefined);
   assert.equal(h.calls[1].body.temperature, undefined);
+});
+
+test('DeepL posts the batch to the plan domain, keeps item order and maps language codes', async () => {
+  const h = harness(({ body }) => ({ ok: true, json: async () => ({ translations: body.text.map(text => ({ detected_source_language: 'EN', text: `译：${text}` })) }) }));
+  const result = await h.translate(['First paragraph.', 'Second paragraph.'], { service: 'deepl', apiKey: 'fixture-key:fx', targetLang: 'zh-TW' });
+  assert.deepEqual(JSON.parse(JSON.stringify(result.translations)), ['译：First paragraph.', '译：Second paragraph.']);
+  assert.equal(h.calls.length, 1, 'one batch covers both paragraphs');
+  assert.equal(h.calls[0].url, 'https://api-free.deepl.com/v2/translate');
+  assert.equal(h.calls[0].options.method, 'POST');
+  assert.equal(h.calls[0].options.headers.Authorization, 'DeepL-Auth-Key fixture-key:fx');
+  assert.equal(h.calls[0].body.target_lang, 'ZH-HANT');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls[0].body.text)), ['First paragraph.', 'Second paragraph.']);
+  assert.equal(h.calls[0].body.text.some(text => text.includes('⟦')), false, 'no separator marker is needed');
+});
+
+test('DeepL claims go only to api.deepl.com and an empty or short response fails loudly', async () => {
+  const h = harness(({ body }) => ({ ok: true, json: async () => ({ translations: body.text.map(text => ({ text: `译：${text}` })) }) }));
+  await h.translate(['Pro plan text'], { service: 'deepl', deeplPlan: 'pro', apiKey: 'fixture-key', targetLang: 'zh-CN' });
+  assert.equal(h.calls[0].url, 'https://api.deepl.com/v2/translate');
+  assert.equal(h.calls[0].body.target_lang, 'ZH-HANS');
+
+  const short = harness(() => ({ ok: true, json: async () => ({ translations: [{ text: 'only one' }] }) }));
+  await assert.rejects(short.translate(['a', 'b'], { service: 'deepl', apiKey: 'k' }), /数量不匹配/);
+
+  const empty = harness(({ body }) => ({ ok: true, json: async () => ({ translations: body.text.map(() => ({ text: '  ' })) }) }));
+  await assert.rejects(empty.translate(['blank'], { service: 'deepl', apiKey: 'k' }), /空译文/);
+});
+
+test('a missing DeepL key is reported before any request is sent', async () => {
+  const h = harness();
+  await assert.rejects(h.translate(['No key'], { service: 'deepl', apiKey: '' }), /DeepL API Key/);
+  assert.equal(h.calls.length, 0);
 });

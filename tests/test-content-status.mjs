@@ -89,7 +89,7 @@ const response = await new Promise((resolve, reject) => {
 assert.equal(response.ok, true);
 assert.equal(
   JSON.stringify(response.status),
-  JSON.stringify({phase:"watching",error:"",isTranslating:false,isTranslated:false,count:0}),
+  JSON.stringify({phase:"watching",error:"",isTranslating:false,isTranslated:false,count:0,skipped:""}),
 );
 runtimeMessages.length = 0;
 observerCallback([{

@@ -22,7 +22,7 @@ async function run(action){
 }
 async function authorize(site=false){
   if(!view.consent&&!$('consent').checked)throw new Error('请先确认文字发送至以上翻译服务');
-  if(view.settings.service==='openai'&&!view.hasKey)throw new Error('请打开设置，输入或解锁 API Key');
+  if(view.settings.service!=='google'&&!view.hasKey)throw new Error('请打开设置，输入或解锁 API Key');
   const origins=[LT_CONFIG.originPattern(view.destination)];
   if(site)origins.push(LT_CONFIG.originPattern(currentTab.url));
   // Must remain before the first await so Chrome recognizes the user gesture.
@@ -35,10 +35,12 @@ async function init(){
   view=await LT_UI.request('GET_SETTINGS');
   const settings=view.settings;
   $('target-lang').value=settings.targetLang;
-  $('service-badge').textContent=settings.service==='google'?'Google':settings.model;
-  $('destination').textContent=`待译文字发送至 ${view.destination}${settings.service==='openai'?'，可能产生服务商费用。':'。'}`;
+  const serviceName={google:'Google',deepl:'DeepL'}[settings.service]||settings.model;
+  $('service-badge').textContent=serviceName;
+  const costHint=settings.service==='openai'?'，可能产生服务商费用。':settings.service==='deepl'?'，免费版每月 50 万字符额度。':'。';
+  $('destination').textContent=`待译文字发送至 ${view.destination}${costHint}`;
   $('consent').checked=view.consent;$('consent-row').classList.toggle('hidden',view.consent);
-  $('key-warning').classList.toggle('hidden',settings.service!=='openai'||view.hasKey);
+  $('key-warning').classList.toggle('hidden',settings.service==='google'||view.hasKey);
   const [shortcut]=await chrome.commands.getAll();if(shortcut?.shortcut)$('shortcut-hint').textContent=`${shortcut.shortcut} 快速切换`;
   if(!/^https?:\/\//.test(currentTab?.url||'')||/^https:\/\/(chromewebstore.google.com|chrome.google.com\/webstore)/.test(currentTab.url)) {
     status('当前页面不支持翻译，请打开普通网页');$('btn-translate').disabled=true;$('site-rule').disabled=true;return;

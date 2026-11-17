@@ -1,13 +1,13 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>久远的翻译工具 · 隐私说明</title>
 <style>:root{color-scheme:light dark}body{font:16px/1.8 system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 24px}h1{font-size:26px}h2{font-size:19px;margin-top:28px}a{color:#4889ed}code{overflow-wrap:anywhere}</style></head><body>
-<h1>久远的翻译工具 · 隐私说明</h1><p>最后更新：2026 年 11 月 9 日 · 适用于 1.1.1</p>
+<h1>久远的翻译工具 · 隐私说明</h1><p>最后更新：2026 年 11 月 17 日 · 适用于 1.1.1</p>
 <p>本扩展用于网页双语翻译。开发者不运行收集译文或浏览记录的服务器，本扩展不包含广告、分析埋点或远程执行代码。翻译所选内容需要由您确认的第三方服务处理。</p>
 <h2>处理的内容与用途</h2>
 <p>手动翻译时，扩展读取当前网页符合翻译条件的文字，优先处理屏幕附近的内容；开启某网站的自动翻译后，会在该网站打开页面、滚动及内容更新时继续处理。右键翻译处理您选中的文字。编辑区域、密码输入、代码和标记为不翻译的内容默认跳过。页面本身可能包含私人文字，请按需要决定是否翻译。</p>
 <p>Linear 和 LiteLLM 的部分界面标签通过随扩展提供的词典在本机替换；适配器允许远程翻译的未收录内容仍遵循所选服务的授权。本扩展不会发送整页 HTML、表单输入值或浏览历史清单。</p>
 <h2>发送给谁</h2>
-<p>选择 Google 时，待译文字发送至 <code>https://translate.googleapis.com</code>。选择 AI 接口时，文字及该接口的 API Key 发送至您配置的地址；默认支持千问、OpenAI 及其他兼容服务。接收方在扩展弹窗和设置页明确显示。启用前需确认数据用途并授予所需访问权限，服务失败不会静默转交另一服务。</p>
+<p>选择 Google 时，待译文字发送至 <code>https://translate.googleapis.com</code>。选择 DeepL 时，待译文字及 DeepL API Key 发送至 <code>https://api-free.deepl.com</code>（Pro 账户为 <code>https://api.deepl.com</code>）。选择 AI 接口时，文字及该接口的 API Key 发送至您配置的地址；默认支持千问、OpenAI 及其他兼容服务。接收方在扩展弹窗和设置页明确显示。启用前需确认数据用途并授予所需访问权限，服务失败不会静默转交另一服务。</p>
 <p>远程服务必须使用 HTTPS。明确选择本机服务时，允许通过 HTTP 访问 localhost、127.0.0.1 或 ::1。网络请求不携带网页 Cookie 或页面来源地址；服务商仍可能获得网络连接必需的信息（例如 IP 地址），并依其条款处理请求。测试连接仅发送一段固定示例，AI 服务商可能计费。</p>
 <h2>保存在哪里、保存多久</h2>
 <ul><li>普通设置、网站偏好和服务确认记录保存在本机扩展存储中，不通过 Chrome 同步。</li>
@@ -20,6 +20,7 @@
 <p>设置页提供清除密钥、加密副本和临时译文缓存的入口，也可移除网站偏好。Chrome 扩展管理页可撤销网站访问权限；卸载扩展会移除本机扩展数据。第三方服务已收到的数据由其保留与删除政策管理。</p>
 <h2>权限与反馈</h2>
 <p><code>activeTab</code> 用于用户触发后临时访问当前页面；<code>scripting</code> 用于按需注入翻译脚本；<code>storage</code> 保存设置与会话状态；<code>contextMenus</code> 提供选中文字翻译。访问翻译服务及自动翻译网站的权限按需请求，不在安装时要求访问所有网站。</p>
+<p>设置页提供「页面右侧的悬浮设置入口」开关，用于没有扩展工具栏的浏览器（例如 Steam 内置浏览器）。开启后才请求访问所有网站，默认构建只注入一个负责显示按钮的脚本：它不读取页面内容、不发起网络请求，仅在点击时通知后台打开设置页。自行构建的「全站授权版」会把翻译脚本一并静态注入，此时它能读取页面文字（与手动翻译时相同），但不发起任何未经你确认的翻译请求。关闭开关即在下次保存时移除这项授权与注入。</p>
 <p>如有疑问，请使用 Chrome 网上应用店详情页的开发者联系或支持入口。提交问题时请勿附上 API Key 或私人网页原文。我们会在数据处理方式变化时更新本说明及产品内提示。</p>
 <p><a href="https://policies.google.com/privacy" rel="noopener noreferrer">Google 隐私政策</a>；使用 AI 服务时，请同时查阅所配置服务商的隐私政策。</p>
 </body></html>

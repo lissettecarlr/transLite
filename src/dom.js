@@ -105,6 +105,54 @@ var LT_DOM = (() => {
     });
   }
 
+  // ===== 追加段落译文的门禁 =====
+  // 只有真正的「段落块」才适合在原文下方追加一段译文。导航条、面包屑、按钮里的
+  // 文字都由交互元素贡献，追加块会多出一个盒子，把横向布局顶歪。
+  const CONTROLS = 'a,button,label,summary,[role="link"],[role="button"],[role="tab"],[role="menuitem"],[onclick]';
+  const BLOCK_MIN_CHARS = 24;
+
+  function compactText(el) {
+    let text = '';
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3) text += node.nodeValue;
+      else if (node.nodeType === 1 && !node.classList.contains('lt-result')) text += compactText(node);
+    }
+    return text.replace(/\s+/g, ' ').trim();
+  }
+
+  // 纯函数：只吃事实，方便单测（不依赖 DOM）。
+  function blockPolicy({ inControl, display, cursor, position, float, textLength, controlRatio }) {
+    if (inControl) return false;                       // 自己在链接/按钮里
+    if (/^inline/.test(display || '')) return false;   // 行内元素里塞块必然乱
+    if (/flex|grid/.test(display || '')) return false; // 自己就是 flex/grid 容器
+    if (position === 'absolute' || position === 'fixed') return false;
+    if (float && float !== 'none') return false;
+    if (cursor === 'pointer') return false;            // 按钮类容器（<a onclick> 没有 href）
+    if (textLength < BLOCK_MIN_CHARS) return false;    // 短标签串不是段落
+    if (controlRatio >= 0.5) return false;             // 文字主要来自控件 ⇒ 导航
+    return true;
+  }
+
+  function canAppendBlock(el) {
+    try {
+      const style = getComputedStyle(el);
+      const text = compactText(el);
+      let controlled = 0;
+      for (const node of el.querySelectorAll(CONTROLS)) controlled += compactText(node).length;
+      return blockPolicy({
+        inControl: !!el.closest(CONTROLS),
+        display: style.display,
+        cursor: style.cursor,
+        position: style.position,
+        float: style.float,
+        textLength: text.length,
+        controlRatio: text.length ? controlled / text.length : 0,
+      });
+    } catch (_) {
+      return false;
+    }
+  }
+
   function isCurrent(unit) {
     return unit.el.isConnected && unit.sources.every(({ node, value, parent }) =>
       node.isConnected && node.parentElement === parent && node.nodeValue === value && unit.el.contains(node) && !parent.closest(forbidden));
@@ -113,5 +161,5 @@ var LT_DOM = (() => {
     while (el.parentElement && el !== document.body && ['inline','contents'].includes(getComputedStyle(el).display)) el = el.parentElement;
     return el;
   }
-  return { collect, isCurrent, forbidden, scanRoot };
+  return { collect, isCurrent, forbidden, scanRoot, canAppendBlock, blockPolicy, CONTROLS, BLOCK_MIN_CHARS };
 })();

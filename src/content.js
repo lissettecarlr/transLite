@@ -145,7 +145,7 @@ const EXCLUDE_PARENTS = [
   '.lt-result', '[data-lt-done]',
   '[contenteditable]:not([contenteditable="false"])', 'input', 'textarea', 'select',
   '[translate="no"]', '.notranslate', '[hidden]', '[aria-hidden="true"]',
-  '#lt-selection-popup', '#lt-error-toast',
+  '#lt-selection-popup', '#lt-error-toast', '#lt-settings-fab',
 ].join(',');
 
 let state = {
@@ -157,6 +157,7 @@ let state = {
   isTranslating: false,
   isTranslated: false,
   translatedCount: 0,
+  skipped: '',
   rescanRequested: false,
   enabled: false,
   generation: 0,
@@ -195,13 +196,22 @@ function sendRuntimeMessageSafe(message, callback) {
 
 // ---- 初始化 ----
 async function init() {
+  // Steam 客户端的内部界面页不注入任何行为。
+  if (isSteamInternalPage()) return;
   state.settings = await loadSettings();
   setupMutationObserver();
   window.addEventListener('scroll', scheduleRescan, {passive:true, capture:true});
   window.addEventListener('resize', scheduleRescan, {passive:true});
   document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRescan(); });
   window.addEventListener('pagehide', stopTranslation);
-  if (state.settings.siteRule === 'always' && shouldAutoTranslate()) autoStartTimer = setTimeout(() => void startTranslation(), 300);
+  // 没有扩展工具栏的环境（Steam 内置浏览器、全站授权版）没有别的启动方式，按设置自动开始。
+  if (state.settings.siteRule !== 'never' &&
+      (state.settings.siteRule === 'always' || autoTranslateWanted(state.settings))) {
+    // 不按整页语言一刀切：Steam 工坊这类页面外壳是中文、条目全是英文，
+    // 整页抽样会把英文标题一起跳过。改为逐块判断（isTargetLang），
+    // 全部是中文时再在收尾处标记为「已跳过」。
+    autoStartTimer = setTimeout(() => void startTranslation(), 300);
+  }
 }
 
 // ---- Dynamic pages: ignore our own writes; invalidate only changed content. ----
@@ -218,7 +228,7 @@ function scheduleRescan() {
 
 function isExtensionNode(node) {
   const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-  return !!el?.closest?.(`.${LT.RESULT_CLASS}, #${LT.POPUP_ID}, #lt-error-toast`);
+  return !!el?.closest?.(`.${LT.RESULT_CLASS}, #${LT.POPUP_ID}, #lt-error-toast, #lt-settings-fab`);
 }
 
 function hasExternalMutation(mutation) {
@@ -290,6 +300,28 @@ function observePage() {
   });
 }
 
+// Steam 客户端判定：UA 里带 "Valve Steam"。比模糊匹配 steam/valve 准确（参考沉浸式翻译的做法）。
+function isSteamClient() {
+  return (globalThis.navigator?.userAgent || '').includes('Valve Steam');
+}
+
+// Steam 客户端自己的界面页（steamloopback.host 指向 127.0.0.1），翻译它没有意义，还可能弄坏界面。
+function isSteamInternalPage() {
+  try { return /(^|\.)steamloopback\.host$/i.test(globalThis.location?.hostname || ''); } catch (_) { return false; }
+}
+
+// 「跟随环境」：只有拿不到扩展工具栏的地方才自动翻译，普通 Chrome 行为不变。
+function autoTranslateWanted(settings) {
+  const mode = settings?.autoTranslate || 'auto';
+  if (mode === 'always') return true;
+  if (mode !== 'auto') return false;
+  try {
+    if ((chrome.runtime.getManifest?.().content_scripts || []).some(item => (item.js || []).includes('button.js'))) return true;
+  } catch (_) {}
+  // 用 globalThis，避免在没有 navigator 的测试环境里直接抛 ReferenceError。
+  return isSteamClient();
+}
+
 function shouldAutoTranslate() {
   const lang = document.documentElement.lang?.toLowerCase() || '';
   const targetBase = (state.settings.targetLang || 'zh-CN').split('-')[0].toLowerCase();
@@ -355,12 +387,21 @@ function setupMessageListener() {
         {
           removeTranslations();
           state.settings = msg.settings;
+          state.skipped = '';
+          // 刚补上授权/同意就要能立刻生效：满足自动翻译条件就地重启，不必刷新页面。
+          if (state.settings.siteRule !== 'never' &&
+              (state.settings.siteRule === 'always' || autoTranslateWanted(state.settings))) {
+            void startTranslation();
+          }
           sendResponse({ ok: true });
         }
         break;
     }
   });
 }
+
+// 只有 Steam 客户端里才需要排除这个容器，普通网页上留空避免多一次 closest 查询。
+const steamModalFrame = typeof navigator !== 'undefined' && isSteamClient() ? '#modalContentFrameContainer' : '';
 
 function getTranslatableElements() {
   const adapter = getSiteAdapter();
@@ -370,7 +411,8 @@ function getTranslatableElements() {
     : EXCLUDE_PARENTS;
 
   // 反向遍历（内层 → 外层），内层元素优先，防止外层容器把整页文字合并翻译到底部
-  const all = Array.from(document.querySelectorAll(getTranslateSelectors())).reverse();
+  const selectors = getTranslateSelectors();
+  const all = Array.from(document.querySelectorAll(selectors)).reverse();
   const dominated = new Set();
   const result = [];
 
@@ -381,6 +423,14 @@ function getTranslatableElements() {
     if (!isVisible(el)) continue;
     if (shouldSkipNonAggressiveUiChrome(el)) continue;
     if (!state.settings?.aggressiveMode && isClickable(el)) continue;
+    // Steam 客户端自己的弹层容器（参考沉浸式翻译的 isSteam 专属规则）。
+    if (steamModalFrame && el.closest(steamModalFrame)) continue;
+    // 内部还有会被单独选中的块（如描述里的 <p>/<h1>）时交给内层，避免整块再翻一遍。
+    // 注意 <b>/<a>/<br> 不在选择器里，这类富文本仍会整块翻译。
+    // 激进模式下选择器包含 div/span/a，这条会把几乎一切都排除掉，所以只在常规模式生效。
+    if (!state.settings?.aggressiveMode) {
+      try { if (el.querySelector(selectors)) continue; } catch (_) {}
+    }
 
     const text = getCleanText(el);
     if (!text) continue;
@@ -432,12 +482,28 @@ function isVisible(el) {
 
 // 提取元素纯文本，忽略已插入的译文（递归遍历避免 cloneNode 开销）
 // 跳过不可见/辅助元素：hidden、sr-only、popover tooltip、aria-hidden
+// 被 CSS 隐藏的子节点不算正文：Steam 的订阅按钮里三个状态选项只有一个可见，
+// 全算进来就会把「订阅 / 已订阅 / 取消订阅」当成一段话翻出去。
+function isHiddenByCss(node) {
+  try {
+    const style = window.getComputedStyle(node);
+    return style.display === 'none' || style.visibility === 'hidden';
+  } catch (_) {
+    return false;
+  }
+}
+
 function getCleanText(el) {
   let text = '';
+  // 子节点很多的大容器不做 computed style 检查，避免热点路径上反复触发布局。
+  const checkHidden = el.childElementCount <= 12;
   for (const node of el.childNodes) {
     if (node.nodeType === 3) {
       text += node.textContent;
     } else if (node.nodeType === 1 && !node.classList.contains(LT.RESULT_CLASS)) {
+      // <br> 不产生文字，但要留个分隔，否则 "…exquisite." 和下一段会粘在一起发出去。
+      if (node.tagName === 'BR') { text += ' '; continue; }
+      if (checkHidden && isHiddenByCss(node)) continue;
       if (shouldSkipInvisibleNode(node)) continue;
       if (node.hasAttribute(LT.DONE_ATTR)) continue;
       text += getCleanText(node);
@@ -472,6 +538,7 @@ function getTranslationStatus() {
     isTranslating: state.isTranslating,
     isTranslated: state.isTranslated,
     count: state.translatedCount,
+    skipped: state.skipped || '',
   };
 }
 
@@ -611,8 +678,31 @@ function applyTranslation(unit, translation, adapter) {
   state.pendingUnits.delete(unit.node || unit.sources?.[0]?.node || unit.el);
   if (!unitIsCurrent(unit)) { state.rescanRequested = true; if (unit.el.isConnected) state.dirtyRoots.add(unit.el); return; }
   if (unit.mode === 'adapter') {
-    if (!replaceAdapterText(unit.el, translation, unit.text)) return;
-    unit.el.setAttribute(LT.DONE_ATTR, '');
+    if (replaceAdapterText(unit.el, translation, unit.text)) {
+      unit.el.setAttribute(LT.DONE_ATTR, '');
+    } else {
+      // 富文本块（含 <b>/<a>/<br>，整段文字被切成多个文本节点）没法原地替换。
+      // 以前这里直接 return，整块被静默跳过；改成保留原文、把译文作为独立段落追加在后面。
+      if (translation.trim() === unit.text.trim()) return;
+      // 但只在真正的「块」上追加：链接/按钮里、行内元素、以及 flex/grid 容器里追加块
+      // 都会多出一个盒，把导航栏这类横向布局顶歪（Steam 工坊内页的导航栏就是这样被撑开的）。
+      if (!LT_DOM.canAppendBlock(unit.el)) { unit.el.setAttribute(LT.DONE_ATTR, ''); return; }
+      const span = document.createElement('span');
+      span.className = LT.RESULT_CLASS;
+      span.textContent = translation;
+      span.lang = state.settings.targetLang;
+      span.dir = 'auto';
+      span.dataset.theme = state.settings.theme || 'underline';
+      if (state.settings.translationColorMode === 'custom' && state.settings.translationColor) {
+        span.style.setProperty('--lt-color', state.settings.translationColor);
+      }
+      unit.el.setAttribute(LT.DONE_ATTR, '');
+      // 追加在元素内部而不是后面：后者会往父级（常常是横向 flex 行）里多塞一个盒子，
+      // 这正是导航栏被顶歪的原因。放进这个块自己身上，只影响它自己的高度。
+      unit.el.append(span);
+      unit.span = span;
+      state.outputUnits.add(unit);
+    }
   } else {
     if (unit.mode === 'replace') {
       const value = preserveWhitespace(unit.node.nodeValue, translation);
@@ -714,6 +804,9 @@ async function startTranslation() {
       state.taskId = null; state.queuedUnits.clear(); state.isTranslating = false;
       state.isTranslated = state.translatedCount > 0;
       state.phase = failed ? (state.isTranslated ? 'partial' : 'error') : 'watching';
+      // 一段都没翻到：区分「页面本来就是目标语言」和「这页确实没有正文」。
+      // shouldAutoTranslate() 为假 = 整页本来就是目标语言
+      state.skipped = !failed && !state.translatedCount && !shouldAutoTranslate() ? 'target-language' : '';
       if (failed) {state.enabled = false; observer.disconnect(); showError(state.error);}
       notifyPopup();
       if (state.rescanRequested && !failed) scheduleRescan();
@@ -879,6 +972,8 @@ function showError(msg) {
 // 必须用回调并读取 lastError，否则控制台会标黄 "Unchecked runtime.lastError"（Promise 的 catch 消不掉）
 function notifyPopup() {
   const data = getTranslationStatus();
+  // 页面上的悬浮按钮据此显示状态；没有工具栏时这是唯一的反馈渠道。
+  try { document.dispatchEvent(new CustomEvent('lt-status', { detail: data })); } catch (_) {}
   sendRuntimeMessageSafe({ type: 'STATUS_UPDATE', data }, () => {
     if (!isRuntimeAvailable()) return;
     void chrome.runtime.lastError;

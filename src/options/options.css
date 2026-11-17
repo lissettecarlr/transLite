@@ -576,3 +576,18 @@ button:focus-visible, a:focus-visible, [role=button]:focus-visible { outline:2px
   .field-hint,.radio-desc,.toggle-desc { color:#bac5d5; }
   .text-button,a { color:#a9c7ff; }
 }
+
+.health-output {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f5f7f9;
+  color: #3c4043;
+  font: 12px/1.7 ui-monospace, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.health-output:empty { display: none; }
+@media (prefers-color-scheme: dark) {
+  .health-output { background: #1b2027; color: #cfd8e3; }
+}

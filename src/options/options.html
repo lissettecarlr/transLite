@@ -39,6 +39,13 @@
                 <span class="radio-desc">无需配置，直接使用，有频率限制</span>
               </div>
             </label>
+            <label class="radio-card" data-value="deepl">
+              <input type="radio" name="service" value="deepl" />
+              <div class="radio-content">
+                <span class="radio-title">DeepL 翻译</span>
+                <span class="radio-desc">免费版每月 50 万字符，需填 API Key</span>
+              </div>
+            </label>
             <label class="radio-card" data-value="openai">
               <input type="radio" name="service" value="openai" />
               <div class="radio-content">
@@ -49,13 +56,8 @@
           </div>
         </div>
 
-        <!-- OpenAI 配置区，默认隐藏 -->
-        <div id="openai-config" class="openai-section hidden">
-          <div class="field">
-            <label class="field-label" for="provider">服务提供方</label>
-            <select id="provider"><option value="qwen">通义千问 · 阿里云中国内地</option><option value="openai">OpenAI 官方</option><option value="custom">其他兼容接口</option><option value="local">本机 vLLM 服务</option></select>
-            <div class="field-hint">选择预设会填写地址和模型；其他地域或工作空间专属地址可直接修改。</div>
-          </div>
+        <!-- 需要密钥的服务（DeepL / AI 接口）共用这一段，Google 时隐藏 -->
+        <div id="key-config" class="openai-section hidden">
           <div class="field">
             <label class="field-label" for="api-key">API Key <span class="required">*</span></label>
             <div class="input-wrap">
@@ -72,6 +74,27 @@
             <div id="remember-fields" class="hidden"><label class="field-label" for="vault-password">解锁密码</label><input type="password" id="vault-password" minlength="12" autocomplete="new-password" placeholder="至少 12 位，密码不会被保存"><p class="field-hint">密钥以加密形式保存在本机，不再保留明文副本；重新启动浏览器后需解锁。忘记密码时可清除后重新配置。</p></div>
             <div id="unlock-fields" class="hidden"><label class="field-label" for="unlock-password">解锁已保存的密钥</label><div class="model-row"><input type="password" id="unlock-password" autocomplete="current-password" placeholder="输入解锁密码"><button type="button" id="btn-unlock" class="btn-reset">解锁</button></div></div>
             <button type="button" id="btn-clear-key" class="text-button">清除密钥和加密副本</button>
+          </div>
+        </div>
+
+        <!-- DeepL 配置区，默认隐藏 -->
+        <div id="deepl-config" class="openai-section hidden">
+          <div class="field">
+            <label class="field-label" for="deepl-plan">账户版本</label>
+            <select id="deepl-plan">
+              <option value="free">DeepL API Free（每月 50 万字符）</option>
+              <option value="pro">DeepL API Pro（按字符计费）</option>
+            </select>
+            <div class="field-hint">免费版密钥以 :fx 结尾，只能访问 api-free.deepl.com；选错版本会返回 403，切换版本后需重新填写密钥。免费额度用完后，当月将停止翻译。</div>
+          </div>
+        </div>
+
+        <!-- OpenAI 配置区，默认隐藏 -->
+        <div id="openai-config" class="openai-section hidden">
+          <div class="field">
+            <label class="field-label" for="provider">服务提供方</label>
+            <select id="provider"><option value="qwen">通义千问 · 阿里云中国内地</option><option value="openai">OpenAI 官方</option><option value="custom">其他兼容接口</option><option value="local">本机 vLLM 服务</option></select>
+            <div class="field-hint">选择预设会填写地址和模型；其他地域或工作空间专属地址可直接修改。</div>
           </div>
           <div class="field">
             <label class="field-label" for="api-base-url">接口地址</label>
@@ -116,6 +139,19 @@
         <div class="field"><label class="field-label">快捷键</label><button type="button" id="btn-shortcuts" class="btn-reset">在 Chrome 中设置快捷键</button><div class="field-hint">默认 Alt+T，可在 Chrome 的扩展快捷键页面修改。</div></div>
 
         <div class="field">
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-label">页面右侧的悬浮设置入口</div>
+              <div class="toggle-desc" id="floating-hint">没有扩展工具栏的浏览器（如 Steam 内置浏览器）靠它打开设置页。开启需授权访问所有网站；默认构建只注入这一个按钮脚本。</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="floating-button" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
           <label class="field-label" for="target-lang">目标语言</label>
           <select id="target-lang">
             <option value="zh-CN">简体中文</option>
@@ -133,6 +169,16 @@
             <option value="vi">越南文</option>
             <option value="th">泰文</option>
           </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="auto-translate">自动翻译</label>
+          <select id="auto-translate">
+            <option value="auto">跟随环境（无扩展工具栏时自动翻译）</option>
+            <option value="always">始终自动翻译每个网页</option>
+            <option value="off">关闭，只在我手动触发时翻译</option>
+          </select>
+          <div class="field-hint">「跟随环境」只在全站授权版或 Steam 这类拿不到扩展工具栏的浏览器里生效，普通 Chrome 仍按需翻译。已经是目标语言（例如中文）的网页会自动跳过。</div>
         </div>
 
         <div class="field">
@@ -197,6 +243,13 @@
 
         <div id="advanced-content" class="hidden">
           <div class="field">
+            <label class="field-label">自检</label>
+            <button type="button" id="btn-health" class="btn-reset">运行自检</button>
+            <pre id="health-output" class="health-output"></pre>
+            <div class="field-hint">「装了但没翻译」时先点这里：它会列出浏览器缺哪些 API、是否已同意发送文字、Service Worker 是否启动；不会显示任何密钥。</div>
+          </div>
+
+          <div class="field">
             <label class="field-label" for="litellm-base-url">LiteLLM 控制台地址（可选）</label>
             <input type="text" id="litellm-base-url" placeholder="https://your-gateway.example.com" />
             <div class="field-hint">为此站点启用本地词典适配，保留控制台布局。</div>
@@ -206,7 +259,7 @@
 
       <section class="card"><div class="card-title">连接与数据</div>
         <p id="destination" class="destination"></p>
-        <label class="consent"><input type="checkbox" id="service-consent"> 我同意将待译文字发送至以上服务，用于生成译文；使用 AI 接口可能产生服务商费用。</label>
+        <label class="consent"><input type="checkbox" id="service-consent"> 我同意将待译文字发送至以上服务，用于生成译文；使用 AI 接口或 DeepL Pro 可能产生服务商费用。</label>
         <p class="field-hint">测试连接会先保存配置，再发送一段固定示例，不会读取网页。</p>
         <button type="button" id="btn-test" class="btn-reset">保存并测试连接</button>
         <p id="test-result" role="status" aria-live="polite"></p>
